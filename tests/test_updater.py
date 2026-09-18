@@ -1,11 +1,15 @@
+import asyncio
 import os
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from packaging.version import InvalidVersion
 
 from sealdice_sentinel.config import load_update_config
-from sealdice_sentinel.updater import ReleaseLayout
+from sealdice_sentinel.models import ReleaseInfo
+from sealdice_sentinel.updater import ReleaseInstaller, ReleaseLayout
 
 
 def make_release(root: Path, version: str) -> Path:
@@ -58,3 +62,39 @@ updates:
 
     assert config.repository == "tcplsa/sealdice-sentinel"
     assert config.install_root == Path("/srv/sentinel")
+
+
+def test_release_download_retries_transient_failures(tmp_path, monkeypatch) -> None:
+    asyncio.run(_run_download_retry(tmp_path, monkeypatch))
+
+
+async def _run_download_retry(tmp_path, monkeypatch) -> None:
+    attempts = 0
+
+    async def fake_download_once(self, release, destination) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise TimeoutError("temporary network failure")
+        destination.write_bytes(b"verified by the fake downloader")
+
+    async def skip_sleep(delay) -> None:
+        return None
+
+    monkeypatch.setattr(ReleaseInstaller, "_download_once", fake_download_once)
+    monkeypatch.setattr(asyncio, "sleep", skip_sleep)
+    installer = ReleaseInstaller(SimpleNamespace(github_token=None), ReleaseLayout(tmp_path))
+    release = ReleaseInfo(
+        version="0.2.2",
+        release_url="https://example.invalid/release",
+        asset_url="https://example.invalid/release.whl",
+        asset_name="release.whl",
+        sha256="00" * 32,
+        published_at=datetime.now(UTC),
+    )
+    destination = tmp_path / "release.whl"
+
+    await installer._download(release, destination)
+
+    assert attempts == 3
+    assert destination.is_file()

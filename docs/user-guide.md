@@ -282,3 +282,24 @@ Sentinel 会把发送失败的邮件留在 SQLite 队列中并指数退避重试
 
 在 `secrets.env` 中设置 `SEALDICE_MONITOR_GITHUB_TOKEN`，权限只授予读取该仓库内容所需的
 最小范围，然后重启更新定时器。公开仓库通常不需要令牌。
+
+### 下载 Release 时连接 GitHub 超时
+
+先确认是网络问题，而不是版本问题：
+
+```bash
+curl -I --connect-timeout 15 https://api.github.com
+curl -I --connect-timeout 15 https://github.com
+```
+
+0.2.2 起会自动重试 Release 下载，并读取标准代理环境变量。若服务器必须通过可信代理访问
+GitHub，可把以下内容加入 `/etc/sealdice-sentinel/secrets.env`：
+
+```text
+HTTPS_PROXY=http://代理地址:端口
+HTTP_PROXY=http://代理地址:端口
+NO_PROXY=127.0.0.1,localhost
+```
+
+不要使用来源不明的 Release 镜像。即使最终文件会校验 SHA-256，代理仍能看到连接元数据并
+影响可用性。配置代理后重新启动更新服务即可；下载失败不会切换 `current`，现有版本会继续运行。

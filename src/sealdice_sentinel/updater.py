@@ -19,6 +19,10 @@ from .config import UpdateConfig, load_update_config
 from .models import ReleaseInfo
 
 
+class DownloadIntegrityError(RuntimeError):
+    pass
+
+
 class ReleaseLayout:
     """Manage immutable releases and the current/previous symlinks."""
 
@@ -118,13 +122,30 @@ class ReleaseInstaller:
             raise
 
     async def _download(self, release: ReleaseInfo, destination: Path) -> None:
+        attempts = 4
+        for attempt in range(1, attempts + 1):
+            try:
+                await self._download_once(release, destination)
+                return
+            except (aiohttp.ClientError, TimeoutError, DownloadIntegrityError) as error:
+                destination.unlink(missing_ok=True)
+                if attempt == attempts:
+                    raise
+                delay = min(2**attempt, 10)
+                print(
+                    f"download attempt {attempt}/{attempts} failed: "
+                    f"{type(error).__name__}; retrying in {delay}s"
+                )
+                await asyncio.sleep(delay)
+
+    async def _download_once(self, release: ReleaseInfo, destination: Path) -> None:
         headers = {"User-Agent": "sealdice-sentinel-updater"}
         if self.config.github_token:
             headers["Authorization"] = f"Bearer {self.config.github_token}"
         digest = hashlib.sha256()
         timeout = aiohttp.ClientTimeout(total=300)
         async with (
-            aiohttp.ClientSession(headers=headers, timeout=timeout) as session,
+            aiohttp.ClientSession(headers=headers, timeout=timeout, trust_env=True) as session,
             session.get(release.asset_url) as response,
         ):
             response.raise_for_status()
@@ -134,7 +155,7 @@ class ReleaseInstaller:
                     stream.write(chunk)
         if digest.hexdigest() != release.sha256:
             destination.unlink(missing_ok=True)
-            raise ValueError("downloaded wheel failed SHA-256 verification")
+            raise DownloadIntegrityError("downloaded wheel failed SHA-256 verification")
 
     @staticmethod
     def _run(command: list[str]) -> None:

@@ -35,7 +35,11 @@ class GitHubReleaseSource:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
 
-        async with aiohttp.ClientSession(headers=headers, timeout=self._timeout) as session:
+        async with aiohttp.ClientSession(
+            headers=headers,
+            timeout=self._timeout,
+            trust_env=True,
+        ) as session:
             async with session.get(
                 f"{self.API_ROOT}/repos/{self._repository}/releases",
                 params={"per_page": "20"},
