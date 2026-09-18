@@ -56,6 +56,7 @@ async def run(config_path: Path) -> None:
         events=store,
         groups=store,
         processor=processor,
+        incidents=incidents,
         notifications=notifications,
         interval_seconds=config.milky.reconciliation_interval_seconds,
     )

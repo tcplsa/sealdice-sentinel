@@ -45,6 +45,7 @@ async def _run_reconciliation_scenario(tmp_path) -> None:
         events=store,
         groups=store,
         processor=processor,
+        incidents=incidents,
         notifications=notifications,
         interval_seconds=300,
     )
@@ -57,4 +58,3 @@ async def _run_reconciliation_scenario(tmp_path) -> None:
     await service.reconcile_once()
     keys = [item.dedup_key for item in await store.pending()]
     assert len([key for key in keys if key.startswith("group-added:1002:")]) == 1
-

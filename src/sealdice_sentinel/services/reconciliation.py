@@ -4,9 +4,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from ..models import MilkyEvent, Notification, Severity
+from ..models import MilkyEvent, Notification, ServiceName, Severity
 from ..ports import EventRepository, GroupSnapshotRepository, MilkyGateway
 from .event_processor import EventProcessor
+from .incident_service import IncidentService
 from .notification_service import NotificationService
 
 
@@ -17,6 +18,7 @@ class ReconciliationService:
         events: EventRepository,
         groups: GroupSnapshotRepository,
         processor: EventProcessor,
+        incidents: IncidentService,
         notifications: NotificationService,
         interval_seconds: int,
     ) -> None:
@@ -24,6 +26,7 @@ class ReconciliationService:
         self._events = events
         self._groups = groups
         self._processor = processor
+        self._incidents = incidents
         self._notifications = notifications
         self._interval_seconds = interval_seconds
         self._logger = logging.getLogger(__name__)
@@ -65,8 +68,14 @@ class ReconciliationService:
                 await self._processor.process(event)
 
         checked_at = datetime.now(timezone.utc)
+        current_groups = await self._gateway.get_groups()
+        await self._incidents.report_healthy(
+            ServiceName.QQ,
+            checked_at,
+            source="milky:get_group_list:no_cache",
+        )
         added, removed = await self._groups.reconcile_groups(
-            await self._gateway.get_groups(),
+            current_groups,
             checked_at,
         )
         for group in added:
@@ -105,4 +114,3 @@ class ReconciliationService:
                 ),
             )
         )
-
