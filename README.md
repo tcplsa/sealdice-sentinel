@@ -54,9 +54,8 @@ sealdice-sentinel/
 
 ## 后续实现顺序
 
-1. 确认 Yogurt 版本、部署方式和 HTTP/WebHook 地址。
-2. 确认 SealDice 版本及其健康检查方式。
-3. 确认发件邮箱的 SMTP 服务。
-4. 确认聊天插件名称及 Token 用量来源。
-5. 确认未来 GitHub 仓库和 Release 发布规范。
-6. 实现 MVP、部署到测试实例并进行断线演练。
+1. 在 Ubuntu 测试实例完成 Milky、SealDice、SMTP 和故障恢复演练。
+2. 增加配置管理 WebUI、连接测试和运行状态页。
+3. 增加 systemd 多实例部署，支持一台服务器监控多个骰子。
+4. 确认聊天插件名称及 Token 用量来源，再实现用量统计。
+5. 评估移动端消息、登录二维码和 SealDice WebUI 的功能复用方案。
