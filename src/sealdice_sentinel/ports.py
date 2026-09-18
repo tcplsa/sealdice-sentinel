@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Any, Protocol
+
+from .models import HealthSample, MilkyEvent, Notification, ReleaseInfo, TokenUsage
+
+
+class MilkyGateway(Protocol):
+    async def health(self) -> HealthSample: ...
+
+    async def get_friend_requests(self) -> list[dict[str, Any]]: ...
+
+    async def get_groups(self) -> list[dict[str, Any]]: ...
+
+
+class EventSource(Protocol):
+    def events(self) -> AsyncIterator[MilkyEvent]: ...
+
+
+class EventRepository(Protocol):
+    async def record_event(self, event: MilkyEvent) -> bool:
+        """Persist an event; return False when the exact event was already seen."""
+        ...
+
+
+class SealDiceProbe(Protocol):
+    async def health(self) -> HealthSample: ...
+
+
+class NotificationOutbox(Protocol):
+    async def enqueue(self, notification: Notification) -> bool:
+        """Persist a notification; return False when it is a duplicate."""
+        ...
+
+    async def pending(self, limit: int = 100) -> list[Notification]: ...
+
+    async def mark_sent(self, dedup_key: str) -> None: ...
+
+    async def mark_failed(self, dedup_key: str, reason: str) -> None: ...
+
+
+class Mailer(Protocol):
+    async def send(self, notification: Notification) -> None: ...
+
+
+class UsageRepository(Protocol):
+    async def record(self, usage: TokenUsage) -> None: ...
+
+
+class UsageSource(Protocol):
+    def usages(self) -> AsyncIterator[TokenUsage]: ...
+
+
+class ReleaseSource(Protocol):
+    async def latest(self, include_prerelease: bool = False) -> ReleaseInfo | None: ...
+
+
+class UpdateInstaller(Protocol):
+    async def install(self, release: ReleaseInfo) -> None: ...
+
+    async def rollback(self) -> None: ...

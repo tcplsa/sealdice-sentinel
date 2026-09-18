@@ -1,0 +1,22 @@
+[Unit]
+Description=SealDice and Yogurt monitoring service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sealdice-sentinel
+Group=sealdice-sentinel
+WorkingDirectory=/opt/sealdice-sentinel
+EnvironmentFile=/etc/sealdice-sentinel/secrets.env
+ExecStart=/opt/sealdice-sentinel/.venv/bin/sealdice-sentinel --config /etc/sealdice-sentinel/config.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sealdice-sentinel
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+app:
+  timezone: Asia/Shanghai
+  database_path: /var/lib/sealdice-sentinel/sentinel.db
+  log_level: INFO
+
+milky:
+  base_url: http://127.0.0.1:3000
+  access_token: change-me
+  webhook_host: 127.0.0.1
+  webhook_port: 18100
+  webhook_path: /webhooks/milky
+  webhook_token: change-me-too
+  health_interval_seconds: 30
+  failure_threshold: 3
+
+sealdice:
+  health_url: http://127.0.0.1:3211
+  systemd_unit: sealdice.service
+  health_interval_seconds: 30
+  failure_threshold: 3
+
+smtp:
+  host: smtp.example.com
+  port: 465
+  security: tls
+  username: bot-monitor@example.com
+  password_env: SEALDICE_MONITOR_SMTP_PASSWORD
+  from_address: bot-monitor@example.com
+  recipients:
+    - owner@example.com
+  retry_initial_seconds: 30
+  retry_max_seconds: 3600
+
+notifications:
+  dedup_window_seconds: 300
+  daily_report_time: "09:00"
+
+token_usage:
+  enabled: true
+  daily_limit: 1000000
+  alert_thresholds: [0.5, 0.8, 0.95]
+  retain_detail_days: 180
+
+updates:
+  enabled: true
+  repository: tcplsa/sealdice-sentinel
+  mode: notify
+  channel: stable
+  check_interval_seconds: 21600
+  asset_pattern: sealdice_sentinel-{version}-py3-none-any.whl
+  github_token_env: SEALDICE_MONITOR_GITHUB_TOKEN
+  healthcheck_timeout_seconds: 60
