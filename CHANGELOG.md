@@ -2,7 +2,15 @@
 
 本项目的重要变更记录在此文件中。
 
-## 0.2.2 - Unreleased
+## 0.3.0 - Unreleased
+
+- 重做配置 WebUI 的视觉与响应式布局。
+- 页面开放 Milky API、WebHook、SMTP、收件人、邮箱授权码、更新模式和 GitHub Token 配置。
+- 敏感输入默认留空并保留原值，写入 `secrets.env` 前自动备份。
+- 明确显示 WebHook Token 同步状态，保存后重新读取 Yogurt 配置验证一致性。
+- 修复旧 WebHook 地址只追加不替换的问题，并统一 Yogurt v1-v3 的 Token 同步行为。
+
+## 0.2.2 - 2026-09-19
 
 - Release 文件下载失败时自动重试四次并逐步延长等待时间。
 - GitHub API 和 Release 下载支持标准 `HTTPS_PROXY`、`HTTP_PROXY` 与 `NO_PROXY` 环境变量。

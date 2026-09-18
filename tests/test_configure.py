@@ -55,6 +55,19 @@ def _write_sentinel_config(path: Path) -> None:
                     "webhook_token": "change-me-too",
                 },
                 "sealdice": {"health_url": "http://127.0.0.1:3211"},
+                "smtp": {
+                    "host": "smtp.old.example",
+                    "port": 465,
+                    "security": "tls",
+                    "username": "old@example.com",
+                    "password_env": "SEALDICE_MONITOR_SMTP_PASSWORD",
+                    "from_address": "old@example.com",
+                    "recipients": ["owner@example.com"],
+                },
+                "updates": {
+                    "mode": "notify",
+                    "github_token_env": "SEALDICE_MONITOR_GITHUB_TOKEN",
+                },
             },
             sort_keys=False,
         ),
@@ -94,6 +107,59 @@ def test_multiple_connections_require_an_explicit_id(tmp_path) -> None:
     assert len(discover_connections(tmp_path)) == 2
     with pytest.raises(ValueError, match="--connection-id"):
         apply_configuration(tmp_path, sentinel_path)
+
+
+def test_full_configuration_and_webhook_tokens_are_synchronized(tmp_path) -> None:
+    yogurt_path = _write_yogurt_v3(tmp_path, "main")
+    yogurt = json.loads(yogurt_path.read_text(encoding="utf-8"))
+    yogurt["milky"]["webhook"]["endpoints"] = [
+        {"url": "http://127.0.0.1:9999/webhooks/milky", "accessToken": "stale-token"}
+    ]
+    yogurt_path.write_text(json.dumps(yogurt), encoding="utf-8")
+    sentinel_path = tmp_path / "sentinel.yaml"
+    _write_sentinel_config(sentinel_path)
+    secrets_path = tmp_path / "secrets.env"
+    secrets_path.write_text("UNRELATED=keep-me\n", encoding="utf-8")
+
+    result = apply_configuration(
+        tmp_path,
+        sentinel_path,
+        overrides={
+            "milky_access_token": "new-api-token",
+            "webhook_token": "new-webhook-token",
+            "smtp_host": "smtp.new.example",
+            "smtp_port": "587",
+            "smtp_security": "starttls",
+            "smtp_username": "bot@example.com",
+            "smtp_from_address": "bot@example.com",
+            "smtp_recipients": ["one@example.com", "two@example.com"],
+            "smtp_password": "mail authorization code",
+            "update_mode": "automatic",
+            "github_token": "github-token",
+        },
+        secrets_file=secrets_path,
+    )
+
+    sentinel = yaml.safe_load(sentinel_path.read_text(encoding="utf-8"))
+    yogurt = json.loads(yogurt_path.read_text(encoding="utf-8"))
+    endpoints = yogurt["milky"]["webhook"]["endpoints"]
+    assert result["webhook_status"] == "已同步"
+    assert len(endpoints) == 1
+    assert endpoints[0] == {
+        "url": "http://127.0.0.1:18100/webhooks/milky",
+        "accessToken": "new-webhook-token",
+    }
+    assert yogurt["milky"]["http"]["accessToken"] == "new-api-token"
+    assert sentinel["milky"]["access_token"] == "new-api-token"
+    assert sentinel["milky"]["webhook_token"] == "new-webhook-token"
+    assert sentinel["smtp"]["host"] == "smtp.new.example"
+    assert sentinel["smtp"]["recipients"] == ["one@example.com", "two@example.com"]
+    assert sentinel["updates"]["mode"] == "automatic"
+    secrets_text = secrets_path.read_text(encoding="utf-8")
+    assert "UNRELATED=keep-me" in secrets_text
+    assert "SEALDICE_MONITOR_SMTP_PASSWORD='mail authorization code'" in secrets_text
+    assert "SEALDICE_MONITOR_GITHUB_TOKEN=github-token" in secrets_text
+    assert list(tmp_path.glob("secrets.env.bak-*"))
 
 
 @pytest.mark.parametrize("version", [1, 2])
@@ -143,9 +209,23 @@ def test_web_page_never_renders_access_token(tmp_path) -> None:
         "/srv/sealdice",
         "/etc/sealdice-sentinel/config.yaml",
         [connection],
+        settings={
+            "milky": {
+                "base_url": "http://127.0.0.1:33073",
+                "webhook_token": "must-not-appear-either",
+            },
+            "smtp": {
+                "host": "smtp.example.com",
+                "username": "monitor@example.com",
+                "from_address": "monitor@example.com",
+                "recipients": ["owner@example.com"],
+            },
+        },
     )
     assert "must-not-appear" not in page
     assert "Access Token：已配置" in page
+    assert 'value="monitor@example.com"' in page
+    assert "owner@example.com" in page
 
 
 def test_web_ui_discovers_without_exposing_token(tmp_path) -> None:
@@ -178,6 +258,9 @@ async def _exercise_web_ui(tmp_path) -> None:
         assert response.status == 200
         assert "yogurt / main" in page
         assert "secret-api-token" not in page
+        assert "邮件通知" in page
+        assert "WebHook Token" in page
+        assert "GitHub Token" in page
         assert response.headers["X-Frame-Options"] == "DENY"
     finally:
         await client.close()
@@ -231,6 +314,6 @@ async def _exercise_password_login(tmp_path) -> None:
         )
         page = await response.text()
         assert response.status == 200
-        assert "扫描 SealDice" in page
+        assert "扫描目录" in page
     finally:
         await client.close()

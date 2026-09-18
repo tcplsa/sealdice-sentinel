@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import yaml
 from aiohttp import web
@@ -43,6 +44,12 @@ class LoginAdapter(Protocol):
         webhook_url: str,
         preferred_token: str,
     ) -> str: ...
+
+    def configure_access_token(
+        self, connection: DiscoveredConnection, access_token: str
+    ) -> None: ...
+
+    def webhook_entries(self, connection: DiscoveredConnection) -> list[tuple[str, str]]: ...
 
 
 class YogurtAdapter:
@@ -107,12 +114,42 @@ class YogurtAdapter:
         urls = webhook.setdefault("url", [])
         if not isinstance(urls, list):
             raise TypeError("Yogurt v1 webhookConfig.url 应为数组")
-        if webhook_url not in urls:
+        replaced = False
+        for index, existing_url in enumerate(urls):
+            if isinstance(existing_url, str) and _same_webhook_path(existing_url, webhook_url):
+                urls[index] = webhook_url
+                replaced = True
+                break
+        if not replaced:
             urls.append(webhook_url)
-        # v1 shares one token among all webhook URLs. Preserve it to avoid breaking others.
-        token = str(webhook.get("accessToken", "")) or preferred_token
-        webhook["accessToken"] = token
-        return token
+        # Yogurt v1 shares one token among every endpoint. The selected token is authoritative.
+        webhook["accessToken"] = preferred_token
+        return preferred_token
+
+    def configure_access_token(
+        self, connection: DiscoveredConnection, access_token: str
+    ) -> None:
+        document = connection.document
+        if connection.config_version >= 3:
+            document.setdefault("milky", {}).setdefault("http", {})["accessToken"] = access_token
+        else:
+            document.setdefault("httpConfig", {})["accessToken"] = access_token
+        connection.access_token = access_token
+
+    def webhook_entries(self, connection: DiscoveredConnection) -> list[tuple[str, str]]:
+        document = connection.document
+        if connection.config_version >= 3:
+            endpoints = document.get("milky", {}).get("webhook", {}).get("endpoints", [])
+            return _object_webhook_entries(endpoints)
+        webhook = document.get("webhookConfig", [])
+        if connection.config_version == 2:
+            return _object_webhook_entries(webhook)
+        if not isinstance(webhook, dict):
+            return []
+        token = str(webhook.get("accessToken", ""))
+        urls = webhook.get("url", [])
+        entries = [(str(url), token) for url in urls if isinstance(url, str)]
+        return entries or ([('', token)] if token else [])
 
 
 # Adding another login method only requires another adapter in this registry.
@@ -120,28 +157,75 @@ LOGIN_ADAPTERS: tuple[LoginAdapter, ...] = (YogurtAdapter(),)
 
 
 _PAGE_STYLE = """
-:root { color-scheme: light; font-family: system-ui, sans-serif; background: #f4f6f8; color: #17202a; }
-body { margin: 0; }
-main { max-width: 860px; margin: 40px auto; padding: 0 20px 60px; }
-.card { background: white; border: 1px solid #dfe5eb; border-radius: 14px; padding: 24px;
-        margin: 18px 0; box-shadow: 0 5px 22px rgba(23,32,42,.06); }
-h1 { margin-bottom: 8px; } h2 { font-size: 1.15rem; }
-.muted { color: #5f6b76; } .ok { color: #176b3a; } .error { color: #a12020; }
-label { display: block; font-weight: 650; margin: 16px 0 6px; }
-input[type=text] { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid #aeb8c2;
-                   border-radius: 8px; font: inherit; }
-button { margin-top: 18px; border: 0; border-radius: 8px; padding: 10px 16px; font: inherit;
-         font-weight: 700; background: #1769e0; color: white; cursor: pointer; }
-button.secondary { background: #44515e; }
-.connection { display: block; border: 1px solid #dfe5eb; border-radius: 9px; padding: 14px;
-              margin: 10px 0; font-weight: 400; }
-code { overflow-wrap: anywhere; }
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #07111f; color: #e7eef9; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background:
+       radial-gradient(circle at 15% -10%, #173e68 0, transparent 34rem),
+       radial-gradient(circle at 100% 10%, #183d35 0, transparent 30rem), #07111f; }
+main { max-width: 1120px; margin: 0 auto; padding: 48px 24px 80px; }
+.hero { display: flex; justify-content: space-between; gap: 28px; align-items: end; margin-bottom: 30px; }
+.eyebrow { color: #70e1c1; text-transform: uppercase; letter-spacing: .16em; font-size: .72rem;
+           font-weight: 800; }
+h1 { margin: 8px 0; font-size: clamp(2rem, 5vw, 3.4rem); letter-spacing: -.045em; }
+h2 { margin: 0 0 18px; font-size: 1.15rem; } h3 { margin: 6px 0; }
+.muted { color: #94a7bd; } .ok { color: #72e4ad; } .error { color: #ff9b9b; }
+.card { background: rgba(12, 27, 45, .88); border: 1px solid #233d59; border-radius: 18px;
+        padding: 24px; margin: 18px 0; box-shadow: 0 18px 60px rgba(0,0,0,.24); }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.grid .card { margin: 0; }
+.field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.span-2 { grid-column: span 2; }
+label { display: block; color: #c9d8e8; font-weight: 700; margin: 14px 0 7px; font-size: .9rem; }
+input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid #35516f; border-radius: 10px;
+                          background: #091827; color: #f4f8fc; font: inherit; }
+textarea { min-height: 88px; resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 2px solid #37cda6; border-color: transparent; }
+input[type=radio], input[type=checkbox] { width: auto; accent-color: #48d6b1; }
+button { margin-top: 18px; border: 0; border-radius: 11px; padding: 12px 18px; font: inherit;
+         font-weight: 800; background: linear-gradient(135deg, #42d6af, #4d8fff); color: #04111f;
+         cursor: pointer; box-shadow: 0 9px 24px rgba(57,199,174,.18); }
+button.secondary { background: #19324c; color: #dce8f4; box-shadow: none; border: 1px solid #35516f; }
+.connection { display: block; border: 1px solid #294764; border-radius: 12px; padding: 15px;
+              margin: 10px 0; font-weight: 400; background: #0a1b2d; cursor: pointer; }
+.connection:has(input:checked) { border-color: #4bd8b2; box-shadow: inset 0 0 0 1px #4bd8b2; }
+.pill { display: inline-flex; padding: 4px 9px; border-radius: 99px; font-size: .75rem; font-weight: 800;
+        background: #183d35; color: #79e5bd; margin-left: 8px; }
+.pill.warn { background: #4b351b; color: #ffc46b; }
+.notice { border-left: 3px solid #4bd8b2; }
+.actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+code { overflow-wrap: anywhere; color: #9fd4ff; }
+details { margin-top: 16px; color: #a9bad0; } summary { cursor: pointer; font-weight: 700; }
+@media (max-width: 760px) { .hero { display: block; } .grid, .field-grid { grid-template-columns: 1fr; }
+  .span-2 { grid-column: span 1; } main { padding: 28px 14px 60px; } }
 """
+
+
+def _same_webhook_path(left: str, right: str) -> bool:
+    try:
+        return urlsplit(left).path.rstrip("/") == urlsplit(right).path.rstrip("/")
+    except ValueError:
+        return left == right
+
+
+def _object_webhook_entries(endpoints: Any) -> list[tuple[str, str]]:
+    if not isinstance(endpoints, list):
+        return []
+    return [
+        (str(endpoint.get("url", "")), str(endpoint.get("accessToken", "")))
+        for endpoint in endpoints
+        if isinstance(endpoint, dict) and endpoint.get("url")
+    ]
 
 
 def _upsert_object_endpoint(endpoints: list[Any], url: str, token: str) -> None:
     for endpoint in endpoints:
-        if isinstance(endpoint, dict) and endpoint.get("url") == url:
+        if (
+            isinstance(endpoint, dict)
+            and isinstance(endpoint.get("url"), str)
+            and _same_webhook_path(endpoint["url"], url)
+        ):
+            endpoint["url"] = url
             endpoint["accessToken"] = token
             return
     endpoints.append({"url": url, "accessToken": token})
@@ -255,12 +339,54 @@ def _backup_and_write(path: Path, content: str) -> Path:
     return backup
 
 
+def _update_secrets_file(path: Path, updates: dict[str, str]) -> Path | None:
+    updates = {key: value for key, value in updates.items() if value}
+    if not updates:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.touch(mode=0o600)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    remaining = dict(updates)
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            name = stripped.split("=", 1)[0].strip()
+            if name in remaining:
+                output.append(f"{name}={shlex.quote(remaining.pop(name))}")
+                continue
+        output.append(line)
+    for name, value in remaining.items():
+        output.append(f"{name}={shlex.quote(value)}")
+    return _backup_and_write(path, "\n".join(output).rstrip() + "\n")
+
+
+def _is_placeholder_secret(value: str) -> bool:
+    return not value or value in {"change-me", "change-me-too", "replace-me"}
+
+
+def _webhook_is_synced(
+    adapter: LoginAdapter,
+    connection: DiscoveredConnection,
+    webhook_url: str,
+    token: str,
+) -> bool:
+    return any(
+        url == webhook_url and hmac.compare_digest(endpoint_token, token)
+        for url, endpoint_token in adapter.webhook_entries(connection)
+    )
+
+
 def apply_configuration(
     sealdice_path: Path,
     sentinel_config_path: Path,
     connection_id: str | None = None,
     dry_run: bool = False,
+    overrides: dict[str, Any] | None = None,
+    secrets_file: Path | None = None,
 ) -> dict[str, str]:
+    overrides = overrides or {}
     sealdice_path = sealdice_path.resolve()
     if not sealdice_path.is_dir():
         raise ValueError(f"SealDice 目录不存在：{sealdice_path}")
@@ -275,13 +401,26 @@ def apply_configuration(
     if not isinstance(milky, dict):
         raise TypeError("Sentinel milky 配置必须是对象")
 
-    milky["base_url"] = connection.base_url
-    milky["access_token"] = connection.access_token
-    preferred_token = str(milky.get("webhook_token", ""))
-    if not preferred_token or preferred_token in {"change-me", "change-me-too"}:
+    adapter = next(item for item in LOGIN_ADAPTERS if item.name == connection.provider)
+    access_token = str(overrides.get("milky_access_token") or connection.access_token)
+    adapter.configure_access_token(connection, access_token)
+    milky["base_url"] = str(overrides.get("milky_base_url") or connection.base_url)
+    milky["access_token"] = access_token
+    for key in ("webhook_host", "webhook_path"):
+        if overrides.get(key):
+            milky[key] = str(overrides[key])
+    if overrides.get("webhook_port"):
+        milky["webhook_port"] = int(overrides["webhook_port"])
+
+    preferred_token = str(overrides.get("webhook_token") or milky.get("webhook_token", ""))
+    existing_tokens = [
+        token for _, token in adapter.webhook_entries(connection) if not _is_placeholder_secret(token)
+    ]
+    if _is_placeholder_secret(preferred_token) and existing_tokens:
+        preferred_token = existing_tokens[0]
+    if overrides.get("generate_webhook_token") or _is_placeholder_secret(preferred_token):
         preferred_token = secrets.token_urlsafe(32)
     webhook_url = _webhook_url(milky)
-    adapter = next(item for item in LOGIN_ADAPTERS if item.name == connection.provider)
     actual_webhook_token = adapter.configure_webhook(
         connection,
         webhook_url,
@@ -293,6 +432,24 @@ def apply_configuration(
     sealdice = sentinel_document.setdefault("sealdice", {})
     if health_url and isinstance(sealdice, dict):
         sealdice["health_url"] = health_url
+
+    smtp = sentinel_document.setdefault("smtp", {})
+    if not isinstance(smtp, dict):
+        raise TypeError("Sentinel smtp 配置必须是对象")
+    for key in ("host", "security", "username", "from_address"):
+        override_key = f"smtp_{key}"
+        if overrides.get(override_key):
+            smtp[key] = str(overrides[override_key])
+    if overrides.get("smtp_port"):
+        smtp["port"] = int(overrides["smtp_port"])
+    if overrides.get("smtp_recipients"):
+        smtp["recipients"] = list(overrides["smtp_recipients"])
+
+    updates = sentinel_document.setdefault("updates", {})
+    if not isinstance(updates, dict):
+        raise TypeError("Sentinel updates 配置必须是对象")
+    if overrides.get("update_mode") in {"notify", "automatic"}:
+        updates["mode"] = overrides["update_mode"]
 
     backups: list[Path] = []
     if not dry_run:
@@ -308,12 +465,42 @@ def apply_configuration(
                 yaml.safe_dump(sentinel_document, allow_unicode=True, sort_keys=False),
             )
         )
+        secret_updates: dict[str, str] = {}
+        if overrides.get("smtp_password"):
+            secret_updates[str(smtp.get("password_env", "SEALDICE_MONITOR_SMTP_PASSWORD"))] = str(
+                overrides["smtp_password"]
+            )
+        if overrides.get("github_token"):
+            secret_updates[
+                str(updates.get("github_token_env", "SEALDICE_MONITOR_GITHUB_TOKEN"))
+            ] = str(overrides["github_token"])
+        if secrets_file is not None:
+            secrets_backup = _update_secrets_file(secrets_file, secret_updates)
+            if secrets_backup is not None:
+                backups.append(secrets_backup)
+    verification_connection = connection
+    if not dry_run:
+        verification_connection = next(
+            (
+                item
+                for item in adapter.discover(sealdice_path)
+                if item.config_path.resolve() == connection.config_path.resolve()
+            ),
+            connection,
+        )
+    webhook_synced = _webhook_is_synced(
+        adapter,
+        verification_connection,
+        webhook_url,
+        actual_webhook_token,
+    )
     return {
         "provider": connection.provider,
         "connection_id": connection.connection_id,
-        "base_url": connection.base_url,
+        "base_url": str(milky["base_url"]),
         "health_url": health_url or "未识别",
         "webhook_url": webhook_url,
+        "webhook_status": "已同步" if webhook_synced else "未同步",
         "backups": ", ".join(str(path) for path in backups) if backups else "（预览模式未写入）",
     }
 
@@ -343,36 +530,131 @@ def _render_page(
     connections: list[DiscoveredConnection] | None = None,
     result: dict[str, str] | None = None,
     error: str | None = None,
+    settings: dict[str, Any] | None = None,
+    secret_states: dict[str, bool] | None = None,
 ) -> str:
+    settings = settings or {}
+    secret_states = secret_states or {}
+    milky = settings.get("milky", {}) if isinstance(settings.get("milky", {}), dict) else {}
+    smtp = settings.get("smtp", {}) if isinstance(settings.get("smtp", {}), dict) else {}
+    updates = settings.get("updates", {}) if isinstance(settings.get("updates", {}), dict) else {}
+
     connection_html = ""
     if connections is not None:
         if connections:
             choices = []
             for index, connection in enumerate(connections):
                 checked = " checked" if len(connections) == 1 or index == 0 else ""
+                adapter = next(item for item in LOGIN_ADAPTERS if item.name == connection.provider)
+                expected_url = _webhook_url(milky)
+                expected_token = str(milky.get("webhook_token", ""))
+                is_synced = not _is_placeholder_secret(expected_token) and _webhook_is_synced(
+                    adapter,
+                    connection,
+                    expected_url,
+                    expected_token,
+                )
+                sync_badge = (
+                    '<span class="pill">WebHook 已同步</span>'
+                    if is_synced
+                    else '<span class="pill warn">WebHook 待同步</span>'
+                )
                 choices.append(
                     '<label class="connection">'
                     f'<input type="radio" name="connection_id" '
                     f'value="{_escape(connection.connection_id)}"{checked}> '
                     f"<strong>{_escape(connection.provider)} / "
-                    f"{_escape(connection.connection_id)}</strong><br>"
+                    f"{_escape(connection.connection_id)}</strong>{sync_badge}<br>"
                     f"API：<code>{_escape(connection.base_url)}</code><br>"
                     f"配置格式：v{connection.config_version}；Access Token："
                     f"{'已配置' if connection.access_token else '未配置'}"
                     "</label>"
                 )
+            recipients = smtp.get("recipients", [])
+            recipients_text = "\n".join(str(item) for item in recipients) if isinstance(
+                recipients, list
+            ) else str(recipients)
+            smtp_password_hint = (
+                "已保存；留空保持不变" if secret_states.get("smtp_password") else "尚未保存"
+            )
+            github_token_hint = (
+                "已保存；留空保持不变" if secret_states.get("github_token") else "公开仓库可留空"
+            )
+            security = str(smtp.get("security", "tls"))
+            update_mode = str(updates.get("mode", "notify"))
             connection_html = f"""
             <section class="card">
-              <h2>识别到的连接</h2>
+              <h2>选择 QQ 连接</h2>
+              <p class="muted">扫描不会修改文件；只有点击页面底部的保存按钮才会写入。</p>
               <form method="post">
                 <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
                 <input type="hidden" name="action" value="apply">
                 <input type="hidden" name="sealdice_path" value="{_escape(sealdice_path)}">
                 <input type="hidden" name="config_path" value="{_escape(config_path)}">
                 {''.join(choices)}
-                <button type="submit">备份并应用配置</button>
+
+                <div class="grid">
+                  <section class="card">
+                    <h2>Milky 与 WebHook</h2>
+                    <div class="field-grid">
+                      <div class="span-2"><label>Milky API 地址</label>
+                        <input name="milky_base_url" value="{_escape(milky.get('base_url', connections[0].base_url))}"></div>
+                      <div class="span-2"><label>Milky Access Token</label>
+                        <input type="password" name="milky_access_token" autocomplete="new-password"
+                          placeholder="{'已设置；留空保持不变' if connections[0].access_token else '可设置新的 API Token'}"></div>
+                      <div><label>WebHook 监听地址</label>
+                        <input name="webhook_host" value="{_escape(milky.get('webhook_host', '127.0.0.1'))}"></div>
+                      <div><label>WebHook 端口</label>
+                        <input type="number" min="1" max="65535" name="webhook_port"
+                          value="{_escape(milky.get('webhook_port', 18100))}"></div>
+                      <div class="span-2"><label>WebHook 路径</label>
+                        <input name="webhook_path" value="{_escape(milky.get('webhook_path', '/webhooks/milky'))}"></div>
+                      <div class="span-2"><label>WebHook Token</label>
+                        <input type="password" name="webhook_token" autocomplete="new-password"
+                          placeholder="{'已设置；留空会重新同步当前值' if not _is_placeholder_secret(str(milky.get('webhook_token', ''))) else '输入新 Token，或勾选自动生成'}">
+                        <label><input type="checkbox" name="generate_webhook_token" value="yes"> 生成新的高强度 Token</label>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="card">
+                    <h2>邮件通知</h2>
+                    <div class="field-grid">
+                      <div><label>SMTP 主机</label><input name="smtp_host" value="{_escape(smtp.get('host', ''))}"></div>
+                      <div><label>SMTP 端口</label><input type="number" min="1" max="65535"
+                        name="smtp_port" value="{_escape(smtp.get('port', 465))}"></div>
+                      <div><label>加密方式</label><select name="smtp_security">
+                        <option value="tls"{' selected' if security == 'tls' else ''}>TLS（通常 465）</option>
+                        <option value="starttls"{' selected' if security == 'starttls' else ''}>STARTTLS（通常 587）</option>
+                      </select></div>
+                      <div><label>登录账号</label><input name="smtp_username" value="{_escape(smtp.get('username', ''))}"></div>
+                      <div class="span-2"><label>发件地址</label><input name="smtp_from_address"
+                        value="{_escape(smtp.get('from_address', ''))}"></div>
+                      <div class="span-2"><label>收件地址（每行一个）</label><textarea
+                        name="smtp_recipients">{_escape(recipients_text)}</textarea></div>
+                      <div class="span-2"><label>邮箱授权码 / SMTP 密码</label><input type="password"
+                        name="smtp_password" autocomplete="new-password" placeholder="{_escape(smtp_password_hint)}"></div>
+                    </div>
+                  </section>
+                </div>
+
+                <section class="card">
+                  <h2>更新策略</h2>
+                  <div class="field-grid">
+                    <div><label>更新模式</label><select name="update_mode">
+                      <option value="notify"{' selected' if update_mode == 'notify' else ''}>仅通知</option>
+                      <option value="automatic"{' selected' if update_mode == 'automatic' else ''}>自动安装并验证</option>
+                    </select></div>
+                    <div><label>GitHub Token</label><input type="password" name="github_token"
+                      autocomplete="new-password" placeholder="{_escape(github_token_hint)}"></div>
+                  </div>
+                </section>
+
+                <div class="actions">
+                  <button type="submit">备份并保存全部配置</button>
+                  <span class="muted">Token 留空表示保持原值；保存后会再次验证 WebHook 是否一致。</span>
+                </div>
               </form>
-              <p class="muted">不会显示 Token；两个配置文件都会先创建 .bak-* 备份。</p>
             </section>
             """
         else:
@@ -389,6 +671,7 @@ def _render_page(
           <p>Milky API：<code>{_escape(result['base_url'])}</code></p>
           <p>SealDice WebUI：<code>{_escape(result['health_url'])}</code></p>
           <p>WebHook：<code>{_escape(result['webhook_url'])}</code></p>
+          <p>WebHook Token：<strong>{_escape(result['webhook_status'])}</strong></p>
           <p>备份：<code>{_escape(result['backups'])}</code></p>
           <p><strong>下一步：</strong>关闭本页面服务，再依次重启 SealDice 和 Sentinel。</p>
         </section>
@@ -398,11 +681,13 @@ def _render_page(
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>SealDice Sentinel 配置助手</title><style>{_PAGE_STYLE}</style></head>
 <body><main>
-  <h1>SealDice Sentinel 配置助手</h1>
-  <p class="muted">所有敏感 Token 均保持隐藏；远程监听时必须先通过页面密码登录。</p>
+  <header class="hero"><div><div class="eyebrow">Sentinel Control</div>
+    <h1>守望你的骰子</h1>
+    <p class="muted">发现连接、同步鉴权并管理通知配置。</p></div>
+    <div class="pill">安全会话已启用</div></header>
   {status_html}
-  <section class="card">
-    <h2>扫描 SealDice</h2>
+  <section class="card notice">
+    <h2>① 定位 SealDice</h2>
     <form method="post">
       <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
       <input type="hidden" name="action" value="discover">
@@ -410,7 +695,7 @@ def _render_page(
       <input id="sealdice_path" name="sealdice_path" type="text" value="{_escape(sealdice_path)}" required>
       <label for="config_path">Sentinel 配置文件</label>
       <input id="config_path" name="config_path" type="text" value="{_escape(config_path)}" required>
-      <button class="secondary" type="submit">扫描，不修改文件</button>
+      <button class="secondary" type="submit">扫描目录</button>
     </form>
   </section>
   {connection_html}
@@ -451,11 +736,32 @@ def _read_secret(environment_name: str, secrets_file: Path) -> str | None:
     return None
 
 
+def _load_settings(path: Path) -> dict[str, Any]:
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise TypeError("Sentinel 配置根节点必须是对象")
+    return document
+
+
+def _secret_states(settings: dict[str, Any], secrets_file: Path | None) -> dict[str, bool]:
+    if secrets_file is None:
+        return {}
+    smtp = settings.get("smtp", {}) if isinstance(settings.get("smtp", {}), dict) else {}
+    updates = settings.get("updates", {}) if isinstance(settings.get("updates", {}), dict) else {}
+    smtp_name = str(smtp.get("password_env", "SEALDICE_MONITOR_SMTP_PASSWORD"))
+    github_name = str(updates.get("github_token_env", "SEALDICE_MONITOR_GITHUB_TOKEN"))
+    return {
+        "smtp_password": bool(_read_secret(smtp_name, secrets_file)),
+        "github_token": bool(_read_secret(github_name, secrets_file)),
+    }
+
+
 def create_web_app(
     default_sealdice_path: Path,
     default_config_path: Path,
     password: str | None = None,
     secure_cookie: bool = False,
+    secrets_file: Path | None = None,
 ) -> web.Application:
     csrf_token = secrets.token_urlsafe(32)
     session_token = secrets.token_urlsafe(48)
@@ -555,11 +861,14 @@ def create_web_app(
         return response
 
     async def show_page(request: web.Request) -> web.Response:
+        settings = _load_settings(default_config_path)
         response = web.Response(
             text=_render_page(
                 csrf_token,
                 str(default_sealdice_path),
                 str(default_config_path),
+                settings=settings,
+                secret_states=_secret_states(settings, secrets_file),
             ),
             content_type="text/html",
         )
@@ -576,17 +885,45 @@ def create_web_app(
         connections: list[DiscoveredConnection] | None = None
         result: dict[str, str] | None = None
         error: str | None = None
+        settings: dict[str, Any] = {}
         try:
             if not sealdice_path or not config_path:
                 raise ValueError("两个路径都不能为空")
             connections = discover_connections(Path(sealdice_path).resolve())
+            settings = _load_settings(Path(config_path))
             if form.get("action") == "apply":
+                recipients = [
+                    item.strip()
+                    for item in re.split(r"[,;\n]+", str(form.get("smtp_recipients", "")))
+                    if item.strip()
+                ]
+                overrides = {
+                    "milky_base_url": str(form.get("milky_base_url", "")).strip(),
+                    "milky_access_token": str(form.get("milky_access_token", "")).strip(),
+                    "webhook_host": str(form.get("webhook_host", "")).strip(),
+                    "webhook_port": str(form.get("webhook_port", "")).strip(),
+                    "webhook_path": str(form.get("webhook_path", "")).strip(),
+                    "webhook_token": str(form.get("webhook_token", "")).strip(),
+                    "generate_webhook_token": form.get("generate_webhook_token") == "yes",
+                    "smtp_host": str(form.get("smtp_host", "")).strip(),
+                    "smtp_port": str(form.get("smtp_port", "")).strip(),
+                    "smtp_security": str(form.get("smtp_security", "")).strip(),
+                    "smtp_username": str(form.get("smtp_username", "")).strip(),
+                    "smtp_from_address": str(form.get("smtp_from_address", "")).strip(),
+                    "smtp_recipients": recipients,
+                    "smtp_password": str(form.get("smtp_password", "")),
+                    "update_mode": str(form.get("update_mode", "")).strip(),
+                    "github_token": str(form.get("github_token", "")),
+                }
                 result = apply_configuration(
                     Path(sealdice_path),
                     Path(config_path),
                     str(form.get("connection_id", "")) or None,
+                    overrides=overrides,
+                    secrets_file=secrets_file,
                 )
                 connections = discover_connections(Path(sealdice_path).resolve())
+                settings = _load_settings(Path(config_path))
         except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
             error = str(exc)
         return web.Response(
@@ -597,6 +934,8 @@ def create_web_app(
                 connections,
                 result,
                 error,
+                settings,
+                _secret_states(settings, secrets_file),
             ),
             content_type="text/html",
         )
@@ -615,13 +954,20 @@ def run_web_ui(
     config_path: Path,
     password: str | None,
     secure_cookie: bool = False,
+    secrets_file: Path | None = None,
 ) -> None:
     is_loopback = host in {"127.0.0.1", "::1", "localhost"}
     if not is_loopback and (password is None or len(password) < 12):
         raise ValueError("远程监听必须在 secrets.env 中设置至少 12 位的页面密码")
     print(f"配置页已启动：http://{host}:{port}/ （按 Ctrl+C 关闭）")
     web.run_app(
-        create_web_app(sealdice_path, config_path, password, secure_cookie),
+        create_web_app(
+            sealdice_path,
+            config_path,
+            password,
+            secure_cookie,
+            secrets_file,
+        ),
         host=host,
         port=port,
         print=None,
@@ -681,6 +1027,7 @@ def main() -> None:
                 args.config,
                 password,
                 args.secure_cookie,
+                args.secrets_file,
             )
             return
         result = apply_configuration(

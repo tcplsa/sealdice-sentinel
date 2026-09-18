@@ -73,6 +73,17 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure web \
 SealDice WebUI 端口，同步 WebHook，并在修改两侧文件前创建 `.bak-*` 备份。页面只显示
 Token 是否存在，不显示其内容。完成后在服务器按 `Ctrl+C` 关闭配置页，再执行：
 
+扫描完成后的页面可以统一管理：
+
+- Milky API 地址与 Access Token；
+- WebHook 监听地址、端口、路径与 Token；
+- SMTP 主机、端口、加密方式、账号、发件地址和多个收件地址；
+- 邮箱授权码、GitHub Token 和自动更新策略。
+
+敏感字段留空表示保持原值。WebHook 区域会显示“已同步”或“待同步”；保存时会替换同一路径
+的旧端点、同步 Sentinel 与 Yogurt 的 Token，再从磁盘重新读取验证。邮箱授权码与 GitHub
+Token 只写入 `secrets.env`，不会写进 `config.yaml`。
+
 ```bash
 sudo systemctl restart sealdice.service
 sudo systemctl restart sealdice-sentinel.service
