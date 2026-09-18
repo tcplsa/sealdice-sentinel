@@ -3,8 +3,8 @@
 面向 Ubuntu、SealDice 与 Yogurt（Milky 协议）的独立监控服务。
 
 项目处于早期施工阶段，建议先在测试实例演练。当前已经打通 Milky WebHook、SQLite
-事件持久化、通知 Outbox、SMTP 发送、主动健康检查、好友/群列表补偿查询，以及基于
-GitHub Release 的校验更新和回滚；Token 统计暂缓实现。
+事件持久化、通知 Outbox、SMTP 发送、QQ 实际会话与 SealDice 日志链路检查、好友/群列表
+补偿查询，以及基于 GitHub Release 的校验更新和回滚；Token 统计暂缓实现。
 
 ## 文档
 
@@ -29,7 +29,9 @@ GitHub Release 的校验更新和回滚；Token 统计暂缓实现。
 - `bot_offline`、`friend_request`、`group_invitation` 通知转换。
 - SQLite 持久化邮件队列。
 - SMTP TLS/STARTTLS 发送与失败退避重试。
-- Yogurt HTTP 与 SealDice Web 健康探测。
+- Yogurt 进程、QQ 实际会话（绕过群缓存）与 SealDice Web 健康探测。
+- SealDice systemd 日志中的 Milky 断连、发送失败与恢复监控。
+- 根据 SealDice 目录自动发现 Yogurt v1-v3、WebUI 端口并安全回写两侧配置。
 - 连续失败阈值、故障周期和恢复通知。
 - 好友申请定时补偿查询，覆盖 WebHook 中断窗口。
 - 群列表基线与差异检测，发现实际进群和群聊移除。
@@ -55,7 +57,8 @@ sealdice-sentinel/
 ## 后续实现顺序
 
 1. 在 Ubuntu 测试实例完成 Milky、SealDice、SMTP 和故障恢复演练。
-2. 增加配置管理 WebUI、连接测试和运行状态页。
-3. 增加 systemd 多实例部署，支持一台服务器监控多个骰子。
-4. 确认聊天插件名称及 Token 用量来源，再实现用量统计。
-5. 评估移动端消息、登录二维码和 SealDice WebUI 的功能复用方案。
+2. 扩展配置 WebUI，增加连接测试和运行状态页。
+3. 为 NapCat、Lagrange 等登录方式增加配置发现适配器。
+4. 增加 systemd 多实例部署，支持一台服务器监控多个骰子。
+5. 确认聊天插件名称及 Token 用量来源，再实现用量统计。
+6. 评估移动端消息、登录二维码和 SealDice WebUI 的功能复用方案。

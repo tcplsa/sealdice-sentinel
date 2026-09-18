@@ -1,0 +1,181 @@
+import asyncio
+import json
+import re
+from pathlib import Path
+
+import pytest
+import yaml
+from aiohttp import CookieJar
+from aiohttp.test_utils import TestClient, TestServer
+
+from sealdice_sentinel.configure import (
+    DiscoveredConnection,
+    _render_page,
+    apply_configuration,
+    create_web_app,
+    discover_connections,
+)
+
+
+def _write_yogurt_v3(root: Path, connection_id: str, port: int = 33073) -> Path:
+    path = root / "data" / "default" / "extra" / f"milky-{connection_id}" / "config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "configVersion": 3,
+                "milky": {
+                    "http": {
+                        "host": "0.0.0.0",
+                        "port": port,
+                        "prefix": "",
+                        "accessToken": "secret-api-token",
+                    },
+                    "webhook": {"endpoints": []},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_sentinel_config(path: Path) -> None:
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "milky": {
+                    "base_url": "http://127.0.0.1:3000",
+                    "access_token": "old",
+                    "webhook_host": "127.0.0.1",
+                    "webhook_port": 18100,
+                    "webhook_path": "/webhooks/milky",
+                    "webhook_token": "change-me-too",
+                },
+                "sealdice": {"health_url": "http://127.0.0.1:3211"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_apply_discovers_and_updates_yogurt_v3(tmp_path) -> None:
+    yogurt_path = _write_yogurt_v3(tmp_path, "qq1")
+    (tmp_path / "data" / "dice.yaml").write_text(
+        "serveAddress: 0.0.0.0:3212\n", encoding="utf-8"
+    )
+    sentinel_path = tmp_path / "sentinel.yaml"
+    _write_sentinel_config(sentinel_path)
+
+    result = apply_configuration(tmp_path, sentinel_path)
+
+    sentinel = yaml.safe_load(sentinel_path.read_text(encoding="utf-8"))
+    yogurt = json.loads(yogurt_path.read_text(encoding="utf-8"))
+    endpoint = yogurt["milky"]["webhook"]["endpoints"][0]
+    assert result["base_url"] == "http://127.0.0.1:33073"
+    assert sentinel["milky"]["base_url"] == result["base_url"]
+    assert sentinel["milky"]["access_token"] == "secret-api-token"
+    assert sentinel["sealdice"]["health_url"] == "http://127.0.0.1:3212"
+    assert endpoint["url"] == "http://127.0.0.1:18100/webhooks/milky"
+    assert endpoint["accessToken"] == sentinel["milky"]["webhook_token"]
+    assert list(tmp_path.glob("sentinel.yaml.bak-*"))
+    assert list(yogurt_path.parent.glob("config.json.bak-*"))
+
+
+def test_multiple_connections_require_an_explicit_id(tmp_path) -> None:
+    _write_yogurt_v3(tmp_path, "first", 3000)
+    _write_yogurt_v3(tmp_path, "second", 3001)
+    sentinel_path = tmp_path / "sentinel.yaml"
+    _write_sentinel_config(sentinel_path)
+
+    assert len(discover_connections(tmp_path)) == 2
+    with pytest.raises(ValueError, match="--connection-id"):
+        apply_configuration(tmp_path, sentinel_path)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_yogurt_layouts_are_supported(tmp_path, version) -> None:
+    yogurt_path = tmp_path / "data" / "default" / "extra" / "milky-main" / "config.json"
+    yogurt_path.parent.mkdir(parents=True)
+    webhook = {"url": [], "accessToken": "legacy-webhook-token"} if version == 1 else []
+    yogurt_path.write_text(
+        json.dumps(
+            {
+                "configVersion": version,
+                "httpConfig": {
+                    "host": "127.0.0.1",
+                    "port": 3000 + version,
+                    "accessToken": "legacy-api-token",
+                },
+                "webhookConfig": webhook,
+            }
+        ),
+        encoding="utf-8",
+    )
+    sentinel_path = tmp_path / "sentinel.yaml"
+    _write_sentinel_config(sentinel_path)
+
+    apply_configuration(tmp_path, sentinel_path)
+
+    updated = json.loads(yogurt_path.read_text(encoding="utf-8"))
+    if version == 1:
+        assert "http://127.0.0.1:18100/webhooks/milky" in updated["webhookConfig"]["url"]
+        assert updated["webhookConfig"]["accessToken"] == "legacy-webhook-token"
+    else:
+        assert updated["webhookConfig"][0]["url"].endswith("/webhooks/milky")
+
+
+def test_web_page_never_renders_access_token(tmp_path) -> None:
+    connection = DiscoveredConnection(
+        provider="yogurt",
+        connection_id="main",
+        config_path=tmp_path / "config.json",
+        base_url="http://127.0.0.1:33073",
+        access_token="must-not-appear",
+        config_version=3,
+        document={},
+    )
+    page = _render_page(
+        "csrf-value",
+        "/srv/sealdice",
+        "/etc/sealdice-sentinel/config.yaml",
+        [connection],
+    )
+    assert "must-not-appear" not in page
+    assert "Access Token：已配置" in page
+
+
+def test_web_ui_discovers_without_exposing_token(tmp_path) -> None:
+    asyncio.run(_exercise_web_ui(tmp_path))
+
+
+async def _exercise_web_ui(tmp_path) -> None:
+    _write_yogurt_v3(tmp_path, "main")
+    sentinel_path = tmp_path / "sentinel.yaml"
+    _write_sentinel_config(sentinel_path)
+    client = TestClient(
+        TestServer(create_web_app(tmp_path, sentinel_path)),
+        cookie_jar=CookieJar(unsafe=True),
+    )
+    await client.start_server()
+    try:
+        response = await client.get("/")
+        page = await response.text()
+        csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        response = await client.post(
+            "/",
+            data={
+                "csrf_token": csrf_token,
+                "action": "discover",
+                "sealdice_path": str(tmp_path),
+                "config_path": str(sentinel_path),
+            },
+        )
+        page = await response.text()
+        assert response.status == 200
+        assert "yogurt / main" in page
+        assert "secret-api-token" not in page
+        assert response.headers["X-Frame-Options"] == "DENY"
+    finally:
+        await client.close()

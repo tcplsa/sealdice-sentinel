@@ -27,6 +27,9 @@ class SealDiceConfig:
     systemd_unit: str | None
     health_interval_seconds: int = 30
     failure_threshold: int = 3
+    journal_monitor_enabled: bool = True
+    log_failure_threshold: int = 3
+    log_failure_window_seconds: int = 120
 
 
 @dataclass(slots=True, frozen=True)

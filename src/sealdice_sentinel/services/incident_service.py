@@ -10,6 +10,7 @@ SERVICE_LABELS = {
     ServiceName.QQ: "QQ 会话",
     ServiceName.YOGURT: "Yogurt",
     ServiceName.SEALDICE: "SealDice",
+    ServiceName.SEALDICE_LINK: "SealDice-Milky 通信链路",
     ServiceName.SMTP: "SMTP",
 }
 

@@ -44,7 +44,53 @@ sudo bash scripts/install.sh
 安装脚本会创建低权限系统用户、版本目录、Python 虚拟环境、配置模板和三个 systemd
 单元。它不会覆盖已有的配置和密钥，也不会在配置完成前自动启动监控服务。
 
-## 4. 配置 Yogurt 与 SealDice
+## 4. 使用临时配置页（推荐）
+
+配置页按需启动，只监听服务器本机。先在服务器执行：
+
+```bash
+sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure web \
+  --sealdice-path /root/Desktop/Amiya
+```
+
+在自己的电脑另开终端建立 SSH 隧道（把 `你的服务器` 换成实际 SSH 地址）：
+
+```bash
+ssh -L 18101:127.0.0.1:18101 用户名@你的服务器
+```
+
+浏览器打开 `http://127.0.0.1:18101/`。页面会扫描 Yogurt 连接，选择连接后点击应用即可。
+它支持 Yogurt 配置 v1、v2、v3，会识别 Milky 地址、端口、URL 前缀、Access Token 和
+SealDice WebUI 端口，同步 WebHook，并在修改两侧文件前创建 `.bak-*` 备份。页面只显示
+Token 是否存在，不显示其内容。完成后在服务器按 `Ctrl+C` 关闭配置页，再执行：
+
+```bash
+sudo systemctl restart sealdice.service
+sudo systemctl restart sealdice-sentinel.service
+```
+
+配置页拒绝监听非回环地址，不要用反向代理把它暴露到公网。
+
+## 5. 命令行自动配置
+
+不使用网页时，可以先扫描且不修改：
+
+```bash
+sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure discover \
+  --sealdice-path /root/Desktop/Amiya
+```
+
+确认后应用：
+
+```bash
+sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure apply \
+  --sealdice-path /root/Desktop/Amiya \
+  --config /etc/sealdice-sentinel/config.yaml
+```
+
+若发现多个 QQ 连接，增加 `--connection-id 连接ID`；可增加 `--dry-run` 预览而不写文件。
+
+## 6. 手动配置 Yogurt 与 SealDice
 
 编辑主配置：
 
@@ -71,7 +117,19 @@ http://127.0.0.1:18100/webhooks/milky
 并让 Yogurt 以 Bearer Token 方式携带与 `milky.webhook_token` 相同的令牌。若 Yogurt 与
 Sentinel 不在同一台机器，应填 Sentinel 的内网地址，不建议把该端口直接暴露到公网。
 
-## 5. 配置邮件
+### SealDice 日志读取权限
+
+全新安装已包含权限设置。若从 0.1.0 自动升级，执行一次：
+
+```bash
+sudo usermod -aG systemd-journal sealdice-sentinel
+sudo systemctl restart sealdice-sentinel.service
+sudo -u sealdice-sentinel journalctl -u sealdice.service -n 1 --no-pager
+```
+
+最后一条不应显示权限不足。日志监控只跟随 `sealdice.systemd_unit` 指定单元的新日志。
+
+## 7. 配置邮件
 
 在 `config.yaml` 中填写 SMTP 主机、端口、发件地址和骰主的收件地址。常见的连接方式：
 
@@ -92,7 +150,7 @@ SEALDICE_MONITOR_SMTP_PASSWORD=邮箱授权码
 
 不要把真实密码写进 `config.yaml` 或提交到 GitHub。
 
-## 6. 启动与检查
+## 8. 启动与检查
 
 ```bash
 sudo systemctl start sealdice-sentinel
@@ -118,7 +176,7 @@ curl -i -X POST http://127.0.0.1:18100/webhooks/milky \
 
 空事件不一定会产生邮件，但不应返回“连接被拒绝”或鉴权错误。
 
-## 7. 手动检查与更新
+## 9. 手动检查与更新
 
 查看本地当前版和可回滚版：
 
@@ -141,7 +199,7 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater apply --r
 更新器只读取 GitHub Release，不会直接运行 `main` 分支代码。Release 必须同时包含符合
 `asset_pattern` 的 wheel 和 `SHA256SUMS`；下载文件校验失败时不会切换版本。
 
-## 8. 自动更新
+## 10. 自动更新
 
 默认 `updates.mode: notify`，定时器即使运行也不会安装更新。要允许自动安装，将配置改为：
 
@@ -167,7 +225,7 @@ systemctl list-timers sealdice-sentinel-updater.timer
 sudo journalctl -u sealdice-sentinel-updater.service -n 100 --no-pager
 ```
 
-## 9. 手动回滚
+## 11. 手动回滚
 
 ```bash
 sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater rollback --restart
@@ -177,7 +235,7 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater rollback 
 目录之外，回滚不会删除监控历史或密钥。涉及数据库结构不兼容的未来版本，会在发布说明中
 单独标注迁移与回滚限制。
 
-## 10. 常见问题
+## 12. 常见问题
 
 ### 服务启动失败
 
@@ -193,6 +251,16 @@ sudo journalctl -u sealdice-sentinel -n 200 --no-pager
 
 确认 Yogurt 的 Milky HTTP API 地址和令牌正确，并从 Sentinel 所在机器访问该地址。若两者
 位于容器中，`127.0.0.1` 通常只指向各自容器，需要改用容器网络中的服务名或宿主机地址。
+
+0.2.0 起会分别判断 Yogurt 进程与 QQ 实际会话。Milky 服务可访问并不等于 QQ 在线；QQ
+会话还需要通过登录信息和一次绕过缓存的群列表请求，默认连续失败三次才告警。
+
+### WebUI 正常，但骰子不能收发
+
+WebUI 只证明 SealDice 进程仍在运行。Sentinel 还会跟随 SealDice 日志识别 Milky/Yogurt
+断开、退出、发送失败与超时。明确掉线会立即告警；普通发送失败默认需在 120 秒内累计三次。
+如果实际故障没有命中，请保留故障前后几十行日志，删除 QQ 号、Token 和聊天内容后用于补充
+匹配规则。
 
 ### 收不到邮件
 

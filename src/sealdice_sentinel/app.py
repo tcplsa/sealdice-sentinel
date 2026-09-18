@@ -6,7 +6,7 @@ import logging
 import signal
 from pathlib import Path
 
-from .adapters.health import MilkyHealthProbe, SealDiceHttpProbe
+from .adapters.health import MilkyProcessProbe, MilkySessionProbe, SealDiceHttpProbe
 from .adapters.milky import MilkyApiClient
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
@@ -18,6 +18,7 @@ from .services.incident_service import IncidentService
 from .services.mail_worker import MailWorker
 from .services.notification_service import NotificationService
 from .services.reconciliation import ReconciliationService
+from .services.sealdice_log_monitor import SealDiceJournalMonitor
 
 
 async def run(config_path: Path) -> None:
@@ -62,12 +63,19 @@ async def run(config_path: Path) -> None:
     )
     monitors = [
         HealthMonitor(
-            name="yogurt-http",
-            probe=MilkyHealthProbe(config.milky.base_url, config.milky.access_token),
+            name="milky-process",
+            probe=MilkyProcessProbe(config.milky.base_url, config.milky.access_token),
             incidents=incidents,
             interval_seconds=config.milky.health_interval_seconds,
             failure_threshold=config.milky.failure_threshold,
-        )
+        ),
+        HealthMonitor(
+            name="qq-session",
+            probe=MilkySessionProbe(config.milky.base_url, config.milky.access_token),
+            incidents=incidents,
+            interval_seconds=config.milky.health_interval_seconds,
+            failure_threshold=config.milky.failure_threshold,
+        ),
     ]
     if config.sealdice.health_url:
         monitors.append(
@@ -85,6 +93,16 @@ async def run(config_path: Path) -> None:
         asyncio.create_task(mail_worker.run(stop), name="mail-worker"),
         asyncio.create_task(reconciliation.run(stop), name="milky-reconciliation"),
     ]
+    if config.sealdice.journal_monitor_enabled and config.sealdice.systemd_unit:
+        journal_monitor = SealDiceJournalMonitor(
+            systemd_unit=config.sealdice.systemd_unit,
+            incidents=incidents,
+            failure_threshold=config.sealdice.log_failure_threshold,
+            failure_window_seconds=config.sealdice.log_failure_window_seconds,
+        )
+        tasks.append(
+            asyncio.create_task(journal_monitor.run(stop), name="sealdice-journal-monitor")
+        )
     tasks.extend(
         asyncio.create_task(monitor.run(stop), name=f"health-monitor-{index}")
         for index, monitor in enumerate(monitors, start=1)

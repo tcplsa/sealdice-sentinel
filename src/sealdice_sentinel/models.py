@@ -10,6 +10,7 @@ class ServiceName(StrEnum):
     QQ = "qq"
     YOGURT = "yogurt"
     SEALDICE = "sealdice"
+    SEALDICE_LINK = "sealdice_link"
     SMTP = "smtp"
 
 

@@ -19,6 +19,9 @@ sealdice:
   systemd_unit: sealdice.service
   health_interval_seconds: 30
   failure_threshold: 3
+  journal_monitor_enabled: true
+  log_failure_threshold: 3
+  log_failure_window_seconds: 120
 
 smtp:
   host: smtp.example.com

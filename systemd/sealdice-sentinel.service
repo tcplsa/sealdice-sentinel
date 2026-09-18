@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=sealdice-sentinel
 Group=sealdice-sentinel
+SupplementaryGroups=systemd-journal
 WorkingDirectory=/opt/sealdice-sentinel/current
 EnvironmentFile=/etc/sealdice-sentinel/secrets.env
 ExecStart=/opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel --config /etc/sealdice-sentinel/config.yaml
