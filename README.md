@@ -2,14 +2,15 @@
 
 面向 Ubuntu、SealDice 与 Yogurt（Milky 协议）的独立监控服务。
 
-项目处于早期施工阶段，不应直接用于生产环境。当前已经打通 Milky WebHook、SQLite
-事件持久化、通知 Outbox 和 SMTP 发送链路；Yogurt 主动健康检查、SealDice 检测、
-好友/群列表补偿查询、Token 统计和实际更新器仍待实现。
+项目处于早期施工阶段，建议先在测试实例演练。当前已经打通 Milky WebHook、SQLite
+事件持久化、通知 Outbox、SMTP 发送、主动健康检查、好友/群列表补偿查询，以及基于
+GitHub Release 的校验更新和回滚；Token 统计暂缓实现。
 
 ## 文档
 
 - [需求分析](docs/requirements-analysis.md)
 - [系统架构](docs/architecture.md)
+- [Ubuntu 安装、更新、回滚与使用手册](docs/user-guide.md)
 
 ## 计划中的能力
 
@@ -32,7 +33,7 @@
 - 连续失败阈值、故障周期和恢复通知。
 - 好友申请定时补偿查询，覆盖 WebHook 中断窗口。
 - 群列表基线与差异检测，发现实际进群和群聊移除。
-- GitHub Release 更新策略的领域接口和版本判断骨架。
+- GitHub Release 检查、SHA-256 校验、版本化安装、自动更新与回滚。
 
 ## 目录结构
 

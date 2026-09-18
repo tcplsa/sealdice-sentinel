@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 sealdice-sentinel = "sealdice_sentinel.app:main"
+sealdice-sentinel-updater = "sealdice_sentinel.updater:main"
 
 [project.urls]
 Homepage = "https://github.com/tcplsa/sealdice-sentinel"

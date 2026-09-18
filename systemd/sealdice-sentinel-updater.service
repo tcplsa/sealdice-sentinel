@@ -1,0 +1,19 @@
+[Unit]
+Description=Update SealDice Sentinel from a verified GitHub Release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/sealdice-sentinel/secrets.env
+Environment=PIP_NO_CACHE_DIR=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater --config /etc/sealdice-sentinel/config.yaml apply --automatic --restart
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sealdice-sentinel

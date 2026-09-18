@@ -37,7 +37,7 @@ notifications:
   daily_report_time: "09:00"
 
 token_usage:
-  enabled: true
+  enabled: false
   daily_limit: 1000000
   alert_thresholds: [0.5, 0.8, 0.95]
   retain_detail_days: 180
@@ -51,3 +51,6 @@ updates:
   asset_pattern: sealdice_sentinel-{version}-py3-none-any.whl
   github_token_env: SEALDICE_MONITOR_GITHUB_TOKEN
   healthcheck_timeout_seconds: 60
+  install_root: /opt/sealdice-sentinel
+  service_name: sealdice-sentinel.service
+  python_executable: /usr/bin/python3

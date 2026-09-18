@@ -52,6 +52,9 @@ class UpdateConfig:
     asset_pattern: str
     github_token: str | None
     healthcheck_timeout_seconds: int = 60
+    install_root: Path = Path("/opt/sealdice-sentinel")
+    service_name: str = "sealdice-sentinel.service"
+    python_executable: str = "/usr/bin/python3"
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +107,28 @@ def load_config(path: Path) -> AppConfig:
             asset_pattern=updates["asset_pattern"],
             github_token=os.environ.get(updates.get("github_token_env", "")) or None,
             healthcheck_timeout_seconds=updates.get("healthcheck_timeout_seconds", 60),
+            install_root=Path(updates.get("install_root", "/opt/sealdice-sentinel")),
+            service_name=updates.get("service_name", "sealdice-sentinel.service"),
+            python_executable=updates.get("python_executable", "/usr/bin/python3"),
         ),
         raw=data,
+    )
+
+
+def load_update_config(path: Path) -> UpdateConfig:
+    """Load updater settings without requiring the monitor's SMTP secret."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    updates = data["updates"]
+    return UpdateConfig(
+        enabled=updates.get("enabled", True),
+        repository=updates["repository"],
+        mode=updates.get("mode", "notify"),
+        channel=updates.get("channel", "stable"),
+        check_interval_seconds=updates.get("check_interval_seconds", 21600),
+        asset_pattern=updates["asset_pattern"],
+        github_token=os.environ.get(updates.get("github_token_env", "")) or None,
+        healthcheck_timeout_seconds=updates.get("healthcheck_timeout_seconds", 60),
+        install_root=Path(updates.get("install_root", "/opt/sealdice-sentinel")),
+        service_name=updates.get("service_name", "sealdice-sentinel.service"),
+        python_executable=updates.get("python_executable", "/usr/bin/python3"),
     )

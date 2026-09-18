@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check for SealDice Sentinel updates
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
