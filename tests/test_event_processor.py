@@ -1,8 +1,9 @@
 import asyncio
 from datetime import datetime, timezone
 
-from sealdice_sentinel.models import MilkyEvent
+from sealdice_sentinel.models import Incident, MilkyEvent, ServiceName
 from sealdice_sentinel.services.event_processor import EventProcessor
+from sealdice_sentinel.services.incident_service import IncidentService
 from sealdice_sentinel.services.notification_service import NotificationService
 
 
@@ -17,13 +18,39 @@ class MemoryOutbox:
         return True
 
 
+class MemoryIncidentRepository:
+    def __init__(self) -> None:
+        self.open = {}
+
+    async def record_health_sample(self, sample):
+        pass
+
+    async def open_incident(self, sample, source):
+        if sample.service in self.open:
+            return None
+        incident = Incident(
+            incident_id=len(self.open) + 1,
+            service=sample.service,
+            started_at=sample.checked_at,
+            reason=sample.reason or "未提供",
+            source=source,
+        )
+        self.open[sample.service] = incident
+        return incident
+
+    async def close_incident(self, service, recovered_at, recovery_source):
+        return self.open.pop(ServiceName(service), None)
+
+
 def test_bot_offline_is_deduplicated() -> None:
     asyncio.run(_run_bot_offline_deduplication_scenario())
 
 
 async def _run_bot_offline_deduplication_scenario() -> None:
     outbox = MemoryOutbox()
-    processor = EventProcessor(NotificationService(outbox))
+    notifications = NotificationService(outbox)
+    incidents = IncidentService(MemoryIncidentRepository(), notifications)
+    processor = EventProcessor(notifications, incidents)
     event = MilkyEvent(
         event_type="bot_offline",
         self_id=123456,
@@ -35,4 +62,4 @@ async def _run_bot_offline_deduplication_scenario() -> None:
     await processor.process(event)
     await processor.process(event)
 
-    assert list(outbox.items) == ["qq-offline:123456"]
+    assert list(outbox.items) == ["incident-open:1"]

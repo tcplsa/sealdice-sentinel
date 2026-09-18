@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ..models import MilkyEvent, Notification, Severity
+from ..models import HealthSample, Incident, MilkyEvent, Notification, ServiceName, Severity
 
 
 class SQLiteStore:
@@ -57,6 +57,31 @@ class SQLiteStore:
 
                 CREATE INDEX IF NOT EXISTS idx_outbox_pending
                 ON notification_outbox(status, next_attempt_at, created_at);
+
+                CREATE TABLE IF NOT EXISTS health_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service TEXT NOT NULL,
+                    healthy INTEGER NOT NULL,
+                    checked_at TEXT NOT NULL,
+                    latency_ms INTEGER,
+                    reason TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_health_samples_service_time
+                ON health_samples(service, checked_at);
+
+                CREATE TABLE IF NOT EXISTS incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    recovered_at TEXT,
+                    recovery_source TEXT
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_incident_per_service
+                ON incidents(service) WHERE recovered_at IS NULL;
                 """
             )
 
@@ -177,3 +202,97 @@ class SQLiteStore:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path, timeout=10)
 
+    async def record_health_sample(self, sample: HealthSample) -> None:
+        await asyncio.to_thread(self._record_health_sample_sync, sample)
+
+    def _record_health_sample_sync(self, sample: HealthSample) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO health_samples(service, healthy, checked_at, latency_ms, reason)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    sample.service.value,
+                    int(sample.healthy),
+                    sample.checked_at.isoformat(),
+                    sample.latency_ms,
+                    sample.reason,
+                ),
+            )
+
+    async def open_incident(self, sample: HealthSample, source: str) -> Incident | None:
+        return await asyncio.to_thread(self._open_incident_sync, sample, source)
+
+    def _open_incident_sync(self, sample: HealthSample, source: str) -> Incident | None:
+        reason = sample.reason or "未提供"
+        with self._connect() as db:
+            existing = db.execute(
+                "SELECT id FROM incidents WHERE service = ? AND recovered_at IS NULL",
+                (sample.service.value,),
+            ).fetchone()
+            if existing is not None:
+                return None
+            cursor = db.execute(
+                """
+                INSERT INTO incidents(service, started_at, reason, source)
+                VALUES (?, ?, ?, ?)
+                """,
+                (sample.service.value, sample.checked_at.isoformat(), reason, source),
+            )
+            return Incident(
+                incident_id=int(cursor.lastrowid),
+                service=sample.service,
+                started_at=sample.checked_at,
+                reason=reason,
+                source=source,
+            )
+
+    async def close_incident(
+        self,
+        service: str,
+        recovered_at: datetime,
+        recovery_source: str,
+    ) -> Incident | None:
+        return await asyncio.to_thread(
+            self._close_incident_sync,
+            service,
+            recovered_at,
+            recovery_source,
+        )
+
+    def _close_incident_sync(
+        self,
+        service: str,
+        recovered_at: datetime,
+        recovery_source: str,
+    ) -> Incident | None:
+        with self._connect() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                """
+                SELECT id, service, started_at, reason, source
+                FROM incidents
+                WHERE service = ? AND recovered_at IS NULL
+                """,
+                (service,),
+            ).fetchone()
+            if row is None:
+                return None
+            db.execute(
+                """
+                UPDATE incidents
+                SET recovered_at = ?, recovery_source = ?
+                WHERE id = ?
+                """,
+                (recovered_at.isoformat(), recovery_source, row["id"]),
+            )
+            return Incident(
+                incident_id=row["id"],
+                service=ServiceName(row["service"]),
+                started_at=datetime.fromisoformat(row["started_at"]),
+                reason=row["reason"],
+                source=row["source"],
+                recovered_at=recovered_at,
+                recovery_source=recovery_source,
+            )

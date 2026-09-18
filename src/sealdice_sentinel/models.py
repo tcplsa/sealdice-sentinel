@@ -81,3 +81,14 @@ class ReleaseInfo:
     published_at: datetime
     notes: str = ""
     prerelease: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class Incident:
+    incident_id: int
+    service: ServiceName
+    started_at: datetime
+    reason: str
+    source: str
+    recovered_at: datetime | None = None
+    recovery_source: str | None = None

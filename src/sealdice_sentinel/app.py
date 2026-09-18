@@ -6,11 +6,14 @@ import logging
 import signal
 from pathlib import Path
 
+from .adapters.health import MilkyHealthProbe, SealDiceHttpProbe
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
 from .adapters.webhook import MilkyWebhookServer
 from .config import load_config
 from .services.event_processor import EventProcessor
+from .services.health_monitor import HealthMonitor
+from .services.incident_service import IncidentService
 from .services.mail_worker import MailWorker
 from .services.notification_service import NotificationService
 
@@ -35,7 +38,8 @@ async def run(config_path: Path) -> None:
     )
     await store.initialize()
     notifications = NotificationService(store)
-    processor = EventProcessor(notifications)
+    incidents = IncidentService(store, notifications)
+    processor = EventProcessor(notifications, incidents)
     webhook = MilkyWebhookServer(
         host=config.milky.webhook_host,
         port=config.milky.webhook_port,
@@ -45,9 +49,32 @@ async def run(config_path: Path) -> None:
         processor=processor,
     )
     mail_worker = MailWorker(store, SmtpMailer(config.smtp))
+    monitors = [
+        HealthMonitor(
+            name="yogurt-http",
+            probe=MilkyHealthProbe(config.milky.base_url, config.milky.access_token),
+            incidents=incidents,
+            interval_seconds=config.milky.health_interval_seconds,
+            failure_threshold=config.milky.failure_threshold,
+        )
+    ]
+    if config.sealdice.health_url:
+        monitors.append(
+            HealthMonitor(
+                name="sealdice-http",
+                probe=SealDiceHttpProbe(config.sealdice.health_url),
+                incidents=incidents,
+                interval_seconds=config.sealdice.health_interval_seconds,
+                failure_threshold=config.sealdice.failure_threshold,
+            )
+        )
 
     await webhook.start()
-    mail_task = asyncio.create_task(mail_worker.run(stop), name="mail-worker")
+    tasks = [asyncio.create_task(mail_worker.run(stop), name="mail-worker")]
+    tasks.extend(
+        asyncio.create_task(monitor.run(stop), name=f"health-monitor-{index}")
+        for index, monitor in enumerate(monitors, start=1)
+    )
     logger.info(
         "SealDice Sentinel started",
         extra={
@@ -60,7 +87,7 @@ async def run(config_path: Path) -> None:
     finally:
         stop.set()
         await webhook.stop()
-        await mail_task
+        await asyncio.gather(*tasks)
         logger.info("SealDice Sentinel stopped")
 
 

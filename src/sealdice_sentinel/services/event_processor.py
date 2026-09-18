@@ -1,18 +1,32 @@
 from __future__ import annotations
 
+from .incident_service import IncidentService
 from .notification_service import NotificationService
-from ..models import MilkyEvent, Notification, Severity
+from ..models import HealthSample, MilkyEvent, Notification, ServiceName, Severity
 
 
 class EventProcessor:
     """Convert Milky events into durable domain actions and notifications."""
 
-    def __init__(self, notifications: NotificationService) -> None:
+    def __init__(
+        self,
+        notifications: NotificationService,
+        incidents: IncidentService,
+    ) -> None:
         self._notifications = notifications
+        self._incidents = incidents
 
     async def process(self, event: MilkyEvent) -> None:
+        if event.event_type == "bot_offline":
+            await self._bot_offline(event)
+            return
+
+        await self._incidents.report_healthy(
+            ServiceName.QQ,
+            checked_at=event.occurred_at,
+            source=f"milky:{event.event_type}",
+        )
         handlers = {
-            "bot_offline": self._bot_offline,
             "friend_request": self._friend_request,
             "group_invitation": self._group_invitation,
         }
@@ -22,19 +36,14 @@ class EventProcessor:
 
     async def _bot_offline(self, event: MilkyEvent) -> None:
         reason = str(event.data.get("reason") or "未提供")
-        await self._notifications.publish(
-            Notification(
-                dedup_key=f"qq-offline:{event.self_id}",
-                severity=Severity.CRITICAL,
-                subject="[严重][公骰监控] QQ 已掉线",
-                body=(
-                    f"账号：{event.self_id}\n"
-                    f"发生时间：{event.occurred_at.isoformat()}\n"
-                    f"检测来源：Milky bot_offline\n"
-                    f"下线原因：{reason}\n"
-                    "是否需要人工处理：是"
-                ),
-            )
+        await self._incidents.report_down(
+            HealthSample(
+                service=ServiceName.QQ,
+                healthy=False,
+                checked_at=event.occurred_at,
+                reason=f"账号 {event.self_id}: {reason}",
+            ),
+            source="milky:bot_offline",
         )
 
     async def _friend_request(self, event: MilkyEvent) -> None:
@@ -70,4 +79,3 @@ class EventProcessor:
                 ),
             )
         )
-

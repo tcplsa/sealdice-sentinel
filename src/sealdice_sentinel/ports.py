@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
-from .models import HealthSample, MilkyEvent, Notification, ReleaseInfo, TokenUsage
+from .models import HealthSample, Incident, MilkyEvent, Notification, ReleaseInfo, TokenUsage
 
 
 class MilkyGateway(Protocol):
@@ -26,6 +26,27 @@ class EventRepository(Protocol):
 
 class SealDiceProbe(Protocol):
     async def health(self) -> HealthSample: ...
+
+
+class IncidentRepository(Protocol):
+    async def record_health_sample(self, sample: HealthSample) -> None: ...
+
+    async def open_incident(
+        self,
+        sample: HealthSample,
+        source: str,
+    ) -> Incident | None:
+        """Open an incident, or return None when one is already open."""
+        ...
+
+    async def close_incident(
+        self,
+        service: str,
+        recovered_at,
+        recovery_source: str,
+    ) -> Incident | None:
+        """Close and return an open incident, or None when there is none."""
+        ...
 
 
 class NotificationOutbox(Protocol):

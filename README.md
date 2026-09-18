@@ -28,6 +28,8 @@
 - `bot_offline`、`friend_request`、`group_invitation` 通知转换。
 - SQLite 持久化邮件队列。
 - SMTP TLS/STARTTLS 发送与失败退避重试。
+- Yogurt HTTP 与 SealDice Web 健康探测。
+- 连续失败阈值、故障周期和恢复通知。
 - GitHub Release 更新策略的领域接口和版本判断骨架。
 
 ## 目录结构
