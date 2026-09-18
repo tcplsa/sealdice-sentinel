@@ -7,8 +7,11 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import tempfile
+import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -396,7 +399,7 @@ def _render_page(
 <title>SealDice Sentinel 配置助手</title><style>{_PAGE_STYLE}</style></head>
 <body><main>
   <h1>SealDice Sentinel 配置助手</h1>
-  <p class="muted">本页面只应通过本机或 SSH 隧道访问。所有敏感 Token 均保持隐藏。</p>
+  <p class="muted">所有敏感 Token 均保持隐藏；远程监听时必须先通过页面密码登录。</p>
   {status_html}
   <section class="card">
     <h2>扫描 SealDice</h2>
@@ -414,8 +417,49 @@ def _render_page(
 </main></body></html>"""
 
 
-def create_web_app(default_sealdice_path: Path, default_config_path: Path) -> web.Application:
+def _render_login(csrf_token: str, error: str | None = None) -> str:
+    error_html = f'<p class="error">{_escape(error)}</p>' if error else ""
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>登录 · SealDice Sentinel</title><style>{_PAGE_STYLE}</style></head>
+<body><main><h1>SealDice Sentinel</h1><section class="card">
+  <h2>配置页登录</h2>{error_html}
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
+    <label for="password">页面密码</label>
+    <input id="password" name="password" type="password" required autocomplete="current-password">
+    <button type="submit">登录</button>
+  </form>
+</section></main></body></html>"""
+
+
+def _read_secret(environment_name: str, secrets_file: Path) -> str | None:
+    environment_value = os.environ.get(environment_name)
+    if environment_value:
+        return environment_value
+    if not secrets_file.is_file():
+        return None
+    for raw_line in secrets_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, raw_value = line.split("=", 1)
+        if name.strip() != environment_name:
+            continue
+        values = shlex.split(raw_value.strip(), comments=True, posix=True)
+        return values[0] if values else None
+    return None
+
+
+def create_web_app(
+    default_sealdice_path: Path,
+    default_config_path: Path,
+    password: str | None = None,
+    secure_cookie: bool = False,
+) -> web.Application:
     csrf_token = secrets.token_urlsafe(32)
+    session_token = secrets.token_urlsafe(48)
+    login_failures: dict[str, deque[float]] = defaultdict(deque)
 
     @web.middleware
     async def security_headers(
@@ -432,7 +476,83 @@ def create_web_app(default_sealdice_path: Path, default_config_path: Path) -> we
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    app = web.Application(client_max_size=16 * 1024, middlewares=[security_headers])
+    @web.middleware
+    async def require_login(
+        request: web.Request, handler: web.RequestHandler
+    ) -> web.StreamResponse:
+        if password is None or request.path == "/login":
+            return await handler(request)
+        supplied = request.cookies.get("sentinel_session", "")
+        if supplied and hmac.compare_digest(supplied, session_token):
+            return await handler(request)
+        return web.Response(status=302, headers={"Location": "/login"})
+
+    app = web.Application(
+        client_max_size=16 * 1024,
+        middlewares=[security_headers, require_login],
+    )
+
+    def set_csrf_cookie(response: web.StreamResponse) -> None:
+        response.set_cookie(
+            "sentinel_csrf",
+            csrf_token,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="Strict",
+        )
+
+    def valid_csrf(request: web.Request, form: Any) -> bool:
+        cookie_token = request.cookies.get("sentinel_csrf", "")
+        form_token = str(form.get("csrf_token", ""))
+        return bool(
+            cookie_token
+            and hmac.compare_digest(cookie_token, csrf_token)
+            and hmac.compare_digest(form_token, csrf_token)
+        )
+
+    async def login_page(request: web.Request) -> web.Response:
+        response = web.Response(
+            text=_render_login(csrf_token),
+            content_type="text/html",
+        )
+        set_csrf_cookie(response)
+        return response
+
+    async def login(request: web.Request) -> web.Response:
+        if password is None:
+            return web.Response(status=303, headers={"Location": "/"})
+        form = await request.post()
+        if not valid_csrf(request, form):
+            raise web.HTTPForbidden(text="CSRF 令牌无效")
+        peer = request.remote or "unknown"
+        now = time.monotonic()
+        attempts = login_failures[peer]
+        while attempts and attempts[0] < now - 60:
+            attempts.popleft()
+        if len(attempts) >= 5:
+            return web.Response(
+                text=_render_login(csrf_token, "尝试次数过多，请一分钟后再试。"),
+                content_type="text/html",
+                status=429,
+            )
+        supplied_password = str(form.get("password", ""))
+        if not hmac.compare_digest(supplied_password, password):
+            attempts.append(now)
+            return web.Response(
+                text=_render_login(csrf_token, "密码错误。"),
+                content_type="text/html",
+                status=401,
+            )
+        attempts.clear()
+        response = web.Response(status=303, headers={"Location": "/"})
+        response.set_cookie(
+            "sentinel_session",
+            session_token,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="Strict",
+        )
+        return response
 
     async def show_page(request: web.Request) -> web.Response:
         response = web.Response(
@@ -443,22 +563,13 @@ def create_web_app(default_sealdice_path: Path, default_config_path: Path) -> we
             ),
             content_type="text/html",
         )
-        response.set_cookie(
-            "sentinel_csrf",
-            csrf_token,
-            httponly=True,
-            samesite="Strict",
-        )
+        set_csrf_cookie(response)
         return response
 
     async def submit(request: web.Request) -> web.Response:
         form = await request.post()
-        cookie_token = request.cookies.get("sentinel_csrf", "")
-        form_token = str(form.get("csrf_token", ""))
-        if not cookie_token or not hmac.compare_digest(cookie_token, csrf_token):
-            raise web.HTTPForbidden(text="CSRF cookie 无效")
-        if not hmac.compare_digest(form_token, csrf_token):
-            raise web.HTTPForbidden(text="CSRF 表单令牌无效")
+        if not valid_csrf(request, form):
+            raise web.HTTPForbidden(text="CSRF 令牌无效")
 
         sealdice_path = str(form.get("sealdice_path", "")).strip()
         config_path = str(form.get("config_path", "")).strip()
@@ -490,17 +601,27 @@ def create_web_app(default_sealdice_path: Path, default_config_path: Path) -> we
             content_type="text/html",
         )
 
+    app.router.add_get("/login", login_page)
+    app.router.add_post("/login", login)
     app.router.add_get("/", show_page)
     app.router.add_post("/", submit)
     return app
 
 
-def run_web_ui(host: str, port: int, sealdice_path: Path, config_path: Path) -> None:
-    if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("配置页仅允许监听回环地址，请通过 SSH 端口转发访问")
+def run_web_ui(
+    host: str,
+    port: int,
+    sealdice_path: Path,
+    config_path: Path,
+    password: str | None,
+    secure_cookie: bool = False,
+) -> None:
+    is_loopback = host in {"127.0.0.1", "::1", "localhost"}
+    if not is_loopback and (password is None or len(password) < 12):
+        raise ValueError("远程监听必须在 secrets.env 中设置至少 12 位的页面密码")
     print(f"配置页已启动：http://{host}:{port}/ （按 Ctrl+C 关闭）")
     web.run_app(
-        create_web_app(sealdice_path, config_path),
+        create_web_app(sealdice_path, config_path, password, secure_cookie),
         host=host,
         port=port,
         print=None,
@@ -525,11 +646,26 @@ def main() -> None:
     web_parser = subparsers.add_parser("web")
     web_parser.add_argument("--host", default="127.0.0.1")
     web_parser.add_argument("--port", type=int, default=18101)
-    web_parser.add_argument("--sealdice-path", type=Path, default=Path("/root/Desktop/Amiya"))
+    web_parser.add_argument("--sealdice-path", type=Path, required=True)
     web_parser.add_argument(
         "--config",
         type=Path,
         default=Path("/etc/sealdice-sentinel/config.yaml"),
+    )
+    web_parser.add_argument(
+        "--password-env",
+        default="SEALDICE_SENTINEL_WEB_PASSWORD",
+        help="secrets.env 中保存页面密码的变量名",
+    )
+    web_parser.add_argument(
+        "--secrets-file",
+        type=Path,
+        default=Path("/etc/sealdice-sentinel/secrets.env"),
+    )
+    web_parser.add_argument(
+        "--secure-cookie",
+        action="store_true",
+        help="仅通过 HTTPS 反向代理访问时启用",
     )
     args = parser.parse_args()
     try:
@@ -537,7 +673,15 @@ def main() -> None:
             _print_discovery(args.sealdice_path)
             return
         if args.command == "web":
-            run_web_ui(args.host, args.port, args.sealdice_path, args.config)
+            password = _read_secret(args.password_env, args.secrets_file)
+            run_web_ui(
+                args.host,
+                args.port,
+                args.sealdice_path,
+                args.config,
+                password,
+                args.secure_cookie,
+            )
             return
         result = apply_configuration(
             args.sealdice_path,

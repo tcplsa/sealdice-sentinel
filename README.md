@@ -31,7 +31,7 @@
 - SMTP TLS/STARTTLS 发送与失败退避重试。
 - Yogurt 进程、QQ 实际会话（绕过群缓存）与 SealDice Web 健康探测。
 - SealDice systemd 日志中的 Milky 断连、发送失败与恢复监控。
-- 根据 SealDice 目录自动发现 Yogurt v1-v3、WebUI 端口并安全回写两侧配置。
+- 带密码保护的配置 WebUI，可根据用户指定目录发现 Yogurt v1-v3、WebUI 端口并安全回写两侧配置。
 - 连续失败阈值、故障周期和恢复通知。
 - 好友申请定时补偿查询，覆盖 WebHook 中断窗口。
 - 群列表基线与差异检测，发现实际进群和群聊移除。

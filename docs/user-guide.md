@@ -46,20 +46,29 @@ sudo bash scripts/install.sh
 
 ## 4. 使用临时配置页（推荐）
 
-配置页按需启动，只监听服务器本机。先在服务器执行：
+以下命令中的 `/path/to/sealdice` 只是占位符，必须换成自己的 SealDice 根目录。先在
+`secrets.env` 中设置独立的页面密码（至少 12 位，不要复用邮箱、QQ 或服务器密码）：
+
+```bash
+sudo nano /etc/sealdice-sentinel/secrets.env
+```
+
+追加：
+
+```text
+SEALDICE_SENTINEL_WEB_PASSWORD=请替换为独立的长随机密码
+```
+
+然后让配置页监听服务器端口：
 
 ```bash
 sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure web \
-  --sealdice-path /root/Desktop/Amiya
+  --host 0.0.0.0 \
+  --port 18101 \
+  --sealdice-path /path/to/sealdice
 ```
 
-在自己的电脑另开终端建立 SSH 隧道（把 `你的服务器` 换成实际 SSH 地址）：
-
-```bash
-ssh -L 18101:127.0.0.1:18101 用户名@你的服务器
-```
-
-浏览器打开 `http://127.0.0.1:18101/`。页面会扫描 Yogurt 连接，选择连接后点击应用即可。
+浏览器打开 `http://服务器IP:18101/`，输入页面密码后即可扫描和应用配置。
 它支持 Yogurt 配置 v1、v2、v3，会识别 Milky 地址、端口、URL 前缀、Access Token 和
 SealDice WebUI 端口，同步 WebHook，并在修改两侧文件前创建 `.bak-*` 备份。页面只显示
 Token 是否存在，不显示其内容。完成后在服务器按 `Ctrl+C` 关闭配置页，再执行：
@@ -69,7 +78,9 @@ sudo systemctl restart sealdice.service
 sudo systemctl restart sealdice-sentinel.service
 ```
 
-配置页拒绝监听非回环地址，不要用反向代理把它暴露到公网。
+远程监听时程序会强制要求页面密码，并对连续登录失败限速。普通 HTTP 不能加密传输密码，
+因此至少应使用防火墙把 18101 端口限制为自己的固定 IP；需要通过公网长期访问时应放在
+HTTPS 反向代理后，并增加 `--secure-cookie`。配置完成后建议直接关闭临时配置页。
 
 ## 5. 命令行自动配置
 
@@ -77,14 +88,14 @@ sudo systemctl restart sealdice-sentinel.service
 
 ```bash
 sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure discover \
-  --sealdice-path /root/Desktop/Amiya
+  --sealdice-path /path/to/sealdice
 ```
 
 确认后应用：
 
 ```bash
 sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure apply \
-  --sealdice-path /root/Desktop/Amiya \
+  --sealdice-path /path/to/sealdice \
   --config /etc/sealdice-sentinel/config.yaml
 ```
 

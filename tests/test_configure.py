@@ -10,10 +10,12 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from sealdice_sentinel.configure import (
     DiscoveredConnection,
+    _read_secret,
     _render_page,
     apply_configuration,
     create_web_app,
     discover_connections,
+    run_web_ui,
 )
 
 
@@ -177,5 +179,58 @@ async def _exercise_web_ui(tmp_path) -> None:
         assert "yogurt / main" in page
         assert "secret-api-token" not in page
         assert response.headers["X-Frame-Options"] == "DENY"
+    finally:
+        await client.close()
+
+
+def test_remote_web_ui_requires_a_strong_password(tmp_path) -> None:
+    with pytest.raises(ValueError, match="至少 12 位"):
+        run_web_ui("0.0.0.0", 18101, tmp_path, tmp_path / "config.yaml", None)
+
+
+def test_password_can_be_read_from_secrets_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("TEST_WEB_PASSWORD", raising=False)
+    secrets_file = tmp_path / "secrets.env"
+    secrets_file.write_text(
+        "# unrelated\nTEST_WEB_PASSWORD='a long password value'\n",
+        encoding="utf-8",
+    )
+    assert _read_secret("TEST_WEB_PASSWORD", secrets_file) == "a long password value"
+
+
+def test_password_protected_web_ui(tmp_path) -> None:
+    asyncio.run(_exercise_password_login(tmp_path))
+
+
+async def _exercise_password_login(tmp_path) -> None:
+    sentinel_path = tmp_path / "sentinel.yaml"
+    _write_sentinel_config(sentinel_path)
+    client = TestClient(
+        TestServer(create_web_app(tmp_path, sentinel_path, "correct horse battery staple")),
+        cookie_jar=CookieJar(unsafe=True),
+    )
+    await client.start_server()
+    try:
+        response = await client.get("/")
+        page = await response.text()
+        assert str(response.url).endswith("/login")
+        csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+        response = await client.post(
+            "/login",
+            data={"csrf_token": csrf_token, "password": "wrong-password"},
+        )
+        assert response.status == 401
+
+        response = await client.post(
+            "/login",
+            data={
+                "csrf_token": csrf_token,
+                "password": "correct horse battery staple",
+            },
+        )
+        page = await response.text()
+        assert response.status == 200
+        assert "扫描 SealDice" in page
     finally:
         await client.close()

@@ -61,6 +61,7 @@ if [[ ! -f "${CONFIG_ROOT}/secrets.env" ]]; then
   printf '%s\n' \
     'SEALDICE_MONITOR_SMTP_PASSWORD=replace-me' \
     '# SEALDICE_MONITOR_GITHUB_TOKEN=github_pat_replace-me' \
+    '# SEALDICE_SENTINEL_WEB_PASSWORD=replace-with-at-least-12-characters' \
     >"${CONFIG_ROOT}/secrets.env"
   echo "Created ${CONFIG_ROOT}/secrets.env; replace the SMTP password."
 fi
