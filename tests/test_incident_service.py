@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
 from sealdice_sentinel.models import HealthSample, ServiceName
@@ -15,7 +15,7 @@ async def _run_incident_lifecycle(tmp_path) -> None:
     store = SQLiteStore(tmp_path / "sentinel.db")
     await store.initialize()
     service = IncidentService(store, NotificationService(store))
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     failure = HealthSample(
         service=ServiceName.YOGURT,
         healthy=False,

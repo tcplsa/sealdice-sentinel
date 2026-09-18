@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
 
@@ -11,7 +11,7 @@ def test_group_snapshot_uses_first_run_as_baseline(tmp_path) -> None:
 async def _run_group_snapshot_scenario(tmp_path) -> None:
     store = SQLiteStore(tmp_path / "sentinel.db")
     await store.initialize()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     first = [
         {"group_id": 1001, "group_name": "Alpha", "member_count": 10},
         {"group_id": 1002, "group_name": "Beta", "member_count": 20},

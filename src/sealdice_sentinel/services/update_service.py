@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from packaging.version import InvalidVersion, Version
 
 from ..models import Notification, ReleaseInfo, Severity
@@ -10,7 +12,7 @@ from .notification_service import NotificationService
 class UpdateService:
     """Check immutable releases and coordinate notify/manual/automatic policies."""
 
-    VALID_MODES = {"notify", "manual", "automatic"}
+    VALID_MODES: ClassVar[frozenset[str]] = frozenset({"notify", "manual", "automatic"})
 
     def __init__(
         self,
@@ -64,4 +66,3 @@ class UpdateService:
             return Version(candidate) > self._current_version
         except InvalidVersion:
             return False
-

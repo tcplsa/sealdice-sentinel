@@ -6,7 +6,6 @@ from ..models import HealthSample, Notification, ServiceName, Severity
 from ..ports import IncidentRepository
 from .notification_service import NotificationService
 
-
 SERVICE_LABELS = {
     ServiceName.QQ: "QQ 会话",
     ServiceName.YOGURT: "Yogurt",

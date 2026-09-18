@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sealdice_sentinel.models import Incident, MilkyEvent, ServiceName
 from sealdice_sentinel.services.event_processor import EventProcessor
@@ -54,7 +54,7 @@ async def _run_bot_offline_deduplication_scenario() -> None:
     event = MilkyEvent(
         event_type="bot_offline",
         self_id=123456,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
         data={"reason": "test"},
         raw={},
     )

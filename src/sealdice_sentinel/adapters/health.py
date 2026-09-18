@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiohttp
 
@@ -16,14 +16,16 @@ class MilkyHealthProbe:
 
     async def health(self) -> HealthSample:
         started = time.perf_counter()
-        checked_at = datetime.now(timezone.utc)
+        checked_at = datetime.now(UTC)
         try:
-            async with aiohttp.ClientSession(timeout=self._timeout) as session:
-                async with session.post(self._url, headers=self._headers, json={}) as response:
-                    payload = await response.json(content_type=None)
-                    healthy = response.status == 200 and payload.get("status") == "ok"
-                    reason = None if healthy else f"HTTP {response.status}: {payload.get('message')}"
-        except Exception as exc:
+            async with (
+                aiohttp.ClientSession(timeout=self._timeout) as session,
+                session.post(self._url, headers=self._headers, json={}) as response,
+            ):
+                payload = await response.json(content_type=None)
+                healthy = response.status == 200 and payload.get("status") == "ok"
+                reason = None if healthy else f"HTTP {response.status}: {payload.get('message')}"
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             healthy = False
             reason = f"{type(exc).__name__}: {exc}"
         return HealthSample(
@@ -42,13 +44,15 @@ class SealDiceHttpProbe:
 
     async def health(self) -> HealthSample:
         started = time.perf_counter()
-        checked_at = datetime.now(timezone.utc)
+        checked_at = datetime.now(UTC)
         try:
-            async with aiohttp.ClientSession(timeout=self._timeout) as session:
-                async with session.get(self._url, allow_redirects=True) as response:
-                    healthy = 200 <= response.status < 400
-                    reason = None if healthy else f"HTTP {response.status}"
-        except Exception as exc:
+            async with (
+                aiohttp.ClientSession(timeout=self._timeout) as session,
+                session.get(self._url, allow_redirects=True) as response,
+            ):
+                healthy = 200 <= response.status < 400
+                reason = None if healthy else f"HTTP {response.status}"
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             healthy = False
             reason = f"{type(exc).__name__}: {exc}"
         return HealthSample(
@@ -58,4 +62,3 @@ class SealDiceHttpProbe:
             latency_ms=int((time.perf_counter() - started) * 1000),
             reason=reason,
         )
-

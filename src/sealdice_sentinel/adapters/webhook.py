@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from aiohttp import web
@@ -60,7 +60,7 @@ class MilkyWebhookServer:
 
     @staticmethod
     def _parse_event(payload: dict[str, Any]) -> MilkyEvent:
-        occurred_at = datetime.fromtimestamp(float(payload["time"]), tz=timezone.utc)
+        occurred_at = datetime.fromtimestamp(float(payload["time"]), tz=UTC)
         data = payload.get("data", {})
         if not isinstance(data, dict):
             raise TypeError("data must be an object")

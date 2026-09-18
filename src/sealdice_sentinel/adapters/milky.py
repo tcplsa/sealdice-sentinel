@@ -39,16 +39,17 @@ class MilkyApiClient:
 
     async def call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}/api/{action}"
-        async with aiohttp.ClientSession(timeout=self._timeout) as session:
-            async with session.post(url, headers=self._headers, json=payload) as response:
-                body = await response.json(content_type=None)
-                if response.status != 200 or body.get("status") != "ok":
-                    raise MilkyApiError(
-                        f"{action} failed: HTTP {response.status}, "
-                        f"retcode={body.get('retcode')}, message={body.get('message')}"
-                    )
-                data = body.get("data", {})
-                if not isinstance(data, dict):
-                    raise MilkyApiError(f"{action} returned non-object data")
-                return data
-
+        async with (
+            aiohttp.ClientSession(timeout=self._timeout) as session,
+            session.post(url, headers=self._headers, json=payload) as response,
+        ):
+            body = await response.json(content_type=None)
+            if response.status != 200 or body.get("status") != "ok":
+                raise MilkyApiError(
+                    f"{action} failed: HTTP {response.status}, "
+                    f"retcode={body.get('retcode')}, message={body.get('message')}"
+                )
+            data = body.get("data", {})
+            if not isinstance(data, dict):
+                raise MilkyApiError(f"{action} returned non-object data")
+            return data

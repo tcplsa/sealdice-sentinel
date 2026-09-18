@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
 from sealdice_sentinel.models import MilkyEvent, Notification, Severity
@@ -15,7 +15,7 @@ async def _run_deduplication_scenario(tmp_path) -> None:
     event = MilkyEvent(
         event_type="friend_request",
         self_id=123456,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
         data={"initiator_id": 654321},
         raw={
             "time": 1,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..models import MilkyEvent, Notification, ServiceName, Severity
 from ..ports import EventRepository, GroupSnapshotRepository, MilkyGateway
@@ -60,14 +60,14 @@ class ReconciliationService:
             event = MilkyEvent(
                 event_type="friend_request",
                 self_id=int(raw["self_id"]),
-                occurred_at=datetime.fromtimestamp(raw["time"], tz=timezone.utc),
+                occurred_at=datetime.fromtimestamp(raw["time"], tz=UTC),
                 data=raw["data"],
                 raw=raw,
             )
             if await self._events.record_event(event):
                 await self._processor.process(event)
 
-        checked_at = datetime.now(timezone.utc)
+        checked_at = datetime.now(UTC)
         current_groups = await self._gateway.get_groups()
         await self._incidents.report_healthy(
             ServiceName.QQ,

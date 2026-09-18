@@ -67,9 +67,7 @@ class GitHubReleaseSource:
                 asset_url=asset["browser_download_url"],
                 asset_name=asset_name,
                 sha256=sha256,
-                published_at=datetime.fromisoformat(
-                    str(release["published_at"]).replace("Z", "+00:00")
-                ),
+                published_at=datetime.fromisoformat(str(release["published_at"])),
                 notes=str(release.get("body") or ""),
                 prerelease=bool(release.get("prerelease")),
             )
@@ -98,4 +96,3 @@ class GitHubReleaseSource:
             if name.lstrip("*") == asset_name and re.fullmatch(r"[0-9a-fA-F]{64}", digest):
                 return digest.lower()
         raise ValueError(f"SHA256SUMS does not contain a valid hash for {asset_name}")
-

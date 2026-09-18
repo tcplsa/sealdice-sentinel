@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sealdice_sentinel.models import ReleaseInfo
 from sealdice_sentinel.services.notification_service import NotificationService
@@ -48,7 +48,7 @@ async def _run_notify_mode_scenario() -> None:
         asset_url="https://github.example/assets/monitor.tar.gz",
         asset_name="monitor.tar.gz",
         sha256="0" * 64,
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     outbox = MemoryOutbox()
     installer = RecordingInstaller()

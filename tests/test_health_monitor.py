@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
 from sealdice_sentinel.models import HealthSample, ServiceName
@@ -31,7 +31,7 @@ async def _run_threshold_scenario(tmp_path) -> None:
     failure = HealthSample(
         service=ServiceName.SEALDICE,
         healthy=False,
-        checked_at=datetime.now(timezone.utc),
+        checked_at=datetime.now(UTC),
         reason="timeout",
     )
 

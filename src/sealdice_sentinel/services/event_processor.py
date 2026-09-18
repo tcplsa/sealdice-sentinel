@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from ..models import HealthSample, MilkyEvent, Notification, ServiceName, Severity
 from .incident_service import IncidentService
 from .notification_service import NotificationService
-from ..models import HealthSample, MilkyEvent, Notification, ServiceName, Severity
 
 
 class EventProcessor:
