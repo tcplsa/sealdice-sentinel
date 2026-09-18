@@ -16,6 +16,10 @@
 更新检测器只读取 `tcplsa/sealdice-sentinel` 的 Release。稳定通道忽略草稿和预发布版本，
 并要求目标 wheel 和 `SHA256SUMS` 同时存在。
 
+发布工作流可以安全地重复执行。如果对应 Release 已存在，工作流会覆盖上传构建产物，
+而不是再次创建同名 Release。需要修复空 Release 或重新上传资产时，在 GitHub Actions 的
+`Release` 工作流中选择 `Run workflow`，输入已有标签（例如 `v0.1.0`）即可。
+
 ## 发布步骤
 
 ```text
