@@ -7,6 +7,7 @@ import signal
 from pathlib import Path
 
 from .adapters.health import MilkyHealthProbe, SealDiceHttpProbe
+from .adapters.milky import MilkyApiClient
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
 from .adapters.webhook import MilkyWebhookServer
@@ -16,6 +17,7 @@ from .services.health_monitor import HealthMonitor
 from .services.incident_service import IncidentService
 from .services.mail_worker import MailWorker
 from .services.notification_service import NotificationService
+from .services.reconciliation import ReconciliationService
 
 
 async def run(config_path: Path) -> None:
@@ -49,6 +51,14 @@ async def run(config_path: Path) -> None:
         processor=processor,
     )
     mail_worker = MailWorker(store, SmtpMailer(config.smtp))
+    reconciliation = ReconciliationService(
+        gateway=MilkyApiClient(config.milky.base_url, config.milky.access_token),
+        events=store,
+        groups=store,
+        processor=processor,
+        notifications=notifications,
+        interval_seconds=config.milky.reconciliation_interval_seconds,
+    )
     monitors = [
         HealthMonitor(
             name="yogurt-http",
@@ -70,7 +80,10 @@ async def run(config_path: Path) -> None:
         )
 
     await webhook.start()
-    tasks = [asyncio.create_task(mail_worker.run(stop), name="mail-worker")]
+    tasks = [
+        asyncio.create_task(mail_worker.run(stop), name="mail-worker"),
+        asyncio.create_task(reconciliation.run(stop), name="milky-reconciliation"),
+    ]
     tasks.extend(
         asyncio.create_task(monitor.run(stop), name=f"health-monitor-{index}")
         for index, monitor in enumerate(monitors, start=1)

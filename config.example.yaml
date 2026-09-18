@@ -12,6 +12,7 @@ milky:
   webhook_token: change-me-too
   health_interval_seconds: 30
   failure_threshold: 3
+  reconciliation_interval_seconds: 300
 
 sealdice:
   health_url: http://127.0.0.1:3211

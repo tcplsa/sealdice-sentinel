@@ -82,6 +82,19 @@ class SQLiteStore:
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_incident_per_service
                 ON incidents(service) WHERE recovered_at IS NULL;
+
+                CREATE TABLE IF NOT EXISTS current_groups (
+                    group_id INTEGER PRIMARY KEY,
+                    group_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS monitor_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
 
@@ -201,6 +214,75 @@ class SQLiteStore:
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path, timeout=10)
+
+    async def reconcile_groups(
+        self,
+        groups: list[dict],
+        checked_at: datetime,
+    ) -> tuple[list[dict], list[dict]]:
+        return await asyncio.to_thread(self._reconcile_groups_sync, groups, checked_at)
+
+    def _reconcile_groups_sync(
+        self,
+        groups: list[dict],
+        checked_at: datetime,
+    ) -> tuple[list[dict], list[dict]]:
+        normalized = {
+            int(group["group_id"]): {
+                **group,
+                "group_id": int(group["group_id"]),
+                "group_name": str(group.get("group_name") or group.get("name") or "未知群名"),
+            }
+            for group in groups
+        }
+        timestamp = checked_at.isoformat()
+        with self._connect() as db:
+            db.row_factory = sqlite3.Row
+            initialized = db.execute(
+                "SELECT value FROM monitor_metadata WHERE key = 'groups_initialized'"
+            ).fetchone()
+            existing_rows = db.execute(
+                "SELECT group_id, payload_json FROM current_groups"
+            ).fetchall()
+            existing = {
+                int(row["group_id"]): json.loads(row["payload_json"])
+                for row in existing_rows
+            }
+
+            added_ids = normalized.keys() - existing.keys() if initialized else set()
+            removed_ids = existing.keys() - normalized.keys() if initialized else set()
+
+            for group_id, group in normalized.items():
+                payload = json.dumps(group, ensure_ascii=False, sort_keys=True)
+                db.execute(
+                    """
+                    INSERT INTO current_groups(
+                        group_id, group_name, payload_json, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(group_id) DO UPDATE SET
+                        group_name = excluded.group_name,
+                        payload_json = excluded.payload_json,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (group_id, group["group_name"], payload, timestamp, timestamp),
+                )
+            if removed_ids:
+                placeholders = ",".join("?" for _ in removed_ids)
+                db.execute(
+                    f"DELETE FROM current_groups WHERE group_id IN ({placeholders})",
+                    tuple(removed_ids),
+                )
+            db.execute(
+                """
+                INSERT INTO monitor_metadata(key, value) VALUES ('groups_initialized', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (timestamp,),
+            )
+
+        added = [normalized[group_id] for group_id in sorted(added_ids)]
+        removed = [existing[group_id] for group_id in sorted(removed_ids)]
+        return added, removed
 
     async def record_health_sample(self, sample: HealthSample) -> None:
         await asyncio.to_thread(self._record_health_sample_sync, sample)

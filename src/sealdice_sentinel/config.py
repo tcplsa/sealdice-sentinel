@@ -18,6 +18,7 @@ class MilkyConfig:
     webhook_token: str
     health_interval_seconds: int = 30
     failure_threshold: int = 3
+    reconciliation_interval_seconds: int = 300
 
 
 @dataclass(slots=True, frozen=True)

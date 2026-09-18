@@ -7,8 +7,6 @@ from .models import HealthSample, Incident, MilkyEvent, Notification, ReleaseInf
 
 
 class MilkyGateway(Protocol):
-    async def health(self) -> HealthSample: ...
-
     async def get_friend_requests(self) -> list[dict[str, Any]]: ...
 
     async def get_groups(self) -> list[dict[str, Any]]: ...
@@ -21,6 +19,16 @@ class EventSource(Protocol):
 class EventRepository(Protocol):
     async def record_event(self, event: MilkyEvent) -> bool:
         """Persist an event; return False when the exact event was already seen."""
+        ...
+
+
+class GroupSnapshotRepository(Protocol):
+    async def reconcile_groups(
+        self,
+        groups: list[dict[str, Any]],
+        checked_at,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Persist a group snapshot and return added and removed groups."""
         ...
 
 

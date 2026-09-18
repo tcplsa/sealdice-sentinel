@@ -30,6 +30,8 @@
 - SMTP TLS/STARTTLS 发送与失败退避重试。
 - Yogurt HTTP 与 SealDice Web 健康探测。
 - 连续失败阈值、故障周期和恢复通知。
+- 好友申请定时补偿查询，覆盖 WebHook 中断窗口。
+- 群列表基线与差异检测，发现实际进群和群聊移除。
 - GitHub Release 更新策略的领域接口和版本判断骨架。
 
 ## 目录结构
