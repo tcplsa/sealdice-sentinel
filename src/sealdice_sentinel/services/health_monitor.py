@@ -41,17 +41,34 @@ class HealthMonitor:
 
     async def process_sample(self, sample: HealthSample) -> None:
         if sample.healthy:
+            was_failing = self._consecutive_failures > 0
             self._consecutive_failures = 0
-            await self._incidents.report_healthy(
+            recovered = await self._incidents.report_healthy(
                 sample.service,
                 sample.checked_at,
                 source=f"health:{self._name}",
                 latency_ms=sample.latency_ms,
             )
+            if recovered:
+                self._logger.info("health probe recovered: %s", self._name)
+            elif was_failing:
+                self._logger.info("health probe is healthy again: %s", self._name)
             return
 
         self._consecutive_failures += 1
+        self._logger.warning(
+            "health probe failed (%d/%d): %s: %s",
+            self._consecutive_failures,
+            self._failure_threshold,
+            self._name,
+            sample.reason or "no reason provided",
+        )
         if self._consecutive_failures >= self._failure_threshold:
-            await self._incidents.report_down(sample, source=f"health:{self._name}")
+            opened = await self._incidents.report_down(
+                sample,
+                source=f"health:{self._name}",
+            )
+            if opened:
+                self._logger.error("health incident opened: %s", self._name)
         else:
             await self._incidents.record_sample(sample)

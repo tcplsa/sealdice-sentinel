@@ -93,6 +93,30 @@ sudo systemctl restart sealdice-sentinel.service
 因此至少应使用防火墙把 18101 端口限制为自己的固定 IP；需要通过公网长期访问时应放在
 HTTPS 反向代理后，并增加 `--secure-cookie`。配置完成后建议直接关闭临时配置页。
 
+配置页默认在前台运行，关闭终端后会一并停止。若只想临时放到后台，不需要长期创建新的
+systemd 服务，可以用 transient unit 启动：
+
+```bash
+sudo systemd-run \
+  --unit=sealdice-sentinel-config-web \
+  --collect \
+  --property=Restart=on-failure \
+  /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-configure web \
+  --host 0.0.0.0 \
+  --port 18101 \
+  --sealdice-path /path/to/sealdice
+```
+
+终端可以直接关闭。查看状态、日志和关闭页面分别使用：
+
+```bash
+sudo systemctl status sealdice-sentinel-config-web --no-pager
+sudo journalctl -u sealdice-sentinel-config-web -f
+sudo systemctl stop sealdice-sentinel-config-web
+```
+
+这种临时单元不会设置开机自启，停止或重启服务器后即消失，适合偶尔修改配置时使用。
+
 ## 5. 命令行自动配置
 
 不使用网页时，可以先扫描且不修改：
@@ -198,7 +222,81 @@ curl -i -X POST http://127.0.0.1:18100/webhooks/milky \
 
 空事件不一定会产生邮件，但不应返回“连接被拒绝”或鉴权错误。
 
-## 9. 手动检查与更新
+## 9. 掉线、异常与恢复验收
+
+首次部署和修改监控规则后，应做一次真实断网演练。不要直接停止 SealDice；停止进程只能证明
+HTTP 存活检测有效，无法验证“WebUI 仍在、Milky API 仍在，但 QQ 已不能收发”的情况。
+
+### 9.1 演练前检查
+
+先确认监控与 SealDice 服务都在运行，并各开一个终端观察日志：
+
+```bash
+sudo systemctl is-active sealdice-sentinel.service sealdice.service
+sudo journalctl -u sealdice-sentinel.service -f
+sudo journalctl -u sealdice.service -f
+```
+
+记录 SealDice 当前是否已经设置 systemd 网络访问规则：
+
+```bash
+sudo systemctl show sealdice.service -p IPAddressAllow -p IPAddressDeny
+```
+
+下面的恢复命令假定这两项原本为空。如果输出中已有地址规则，不要继续，应先保存原值并由系统
+管理员制定恢复命令，以免覆盖原有安全策略。
+
+### 9.2 模拟“进程正常、QQ 外网断开”
+
+以下命令只对 `sealdice.service` 临时禁止外部网络，仍允许 `127.0.0.1` 和 `::1`。Sentinel
+属于另一个 systemd 服务，因此仍可访问本机 Milky API、连接 SMTP 并发出告警：
+
+```bash
+sudo systemctl set-property --runtime sealdice.service \
+  IPAddressAllow=localhost IPAddressDeny=any
+```
+
+这是运行时设置，重启服务器后不会保留。演练期间从远程浏览器访问 SealDice WebUI 也可能暂时
+失败，这是网络隔离的预期现象；不要停止 Sentinel。保持隔离约 2 分钟，并从另一个 QQ 尝试向
+骰子发送命令。默认每 30 秒检查一次、连续失败 3 次告警，因此一般应在 90～120 秒内看到：
+
+- QQ 无法收发；
+- Sentinel 发出“QQ 会话异常”邮件；
+- 如果 Yogurt/SealDice 写出了断连或发送失败日志，还会发出“SealDice-Milky 通信链路异常”；
+- 不应把仍能响应本机 `get_impl_info` 的 Yogurt 错报为进程退出。
+
+同时保存故障前后的 SealDice 日志：
+
+```bash
+sudo journalctl -u sealdice.service --since "5 minutes ago" --no-pager
+```
+
+日志可能包含 QQ 号、群号、Token 或聊天内容，对外提供前必须脱敏。若 QQ 已确认不能收发但没有
+产生“QQ 会话异常”，说明 Yogurt 在断网后仍对当前探测返回缓存成功，需要根据本次日志和接口
+返回继续增强主动探测；不要把这次演练误判为通过。
+
+### 9.3 恢复网络并验证恢复通知
+
+若演练前两项网络规则均为空，使用以下命令清除本次临时限制：
+
+```bash
+sudo systemctl set-property --runtime sealdice.service \
+  "IPAddressAllow=" "IPAddressDeny="
+sudo systemctl show sealdice.service -p IPAddressAllow -p IPAddressDeny
+```
+
+等待 Yogurt 自动重连，然后再次从 QQ 发送命令。Sentinel 应发送对应的恢复邮件。若两分钟后仍
+未重连，再执行：
+
+```bash
+sudo systemctl restart sealdice.service
+```
+
+这次断网会让 Yogurt 产生真实的网络异常和重连日志，因此同时覆盖 QQ 会话探测与 SealDice
+日志监控，比伪造一行异常文本更接近实际故障。验收记录应包含告警时间、恢复时间、邮件主题和
+脱敏后的关键日志；后续再用实际日志补充不同 Yogurt 版本的异常模式。
+
+## 10. 手动检查与更新
 
 查看本地当前版和可回滚版：
 
@@ -221,7 +319,7 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater apply --r
 更新器只读取 GitHub Release，不会直接运行 `main` 分支代码。Release 必须同时包含符合
 `asset_pattern` 的 wheel 和 `SHA256SUMS`；下载文件校验失败时不会切换版本。
 
-## 10. 自动更新
+## 11. 自动更新
 
 默认 `updates.mode: notify`，定时器即使运行也不会安装更新。要允许自动安装，将配置改为：
 
@@ -247,7 +345,7 @@ systemctl list-timers sealdice-sentinel-updater.timer
 sudo journalctl -u sealdice-sentinel-updater.service -n 100 --no-pager
 ```
 
-## 11. 手动回滚
+## 12. 手动回滚
 
 ```bash
 sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater rollback --restart
@@ -257,7 +355,7 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater rollback 
 目录之外，回滚不会删除监控历史或密钥。涉及数据库结构不兼容的未来版本，会在发布说明中
 单独标注迁移与回滚限制。
 
-## 12. 常见问题
+## 13. 常见问题
 
 ### 服务启动失败
 

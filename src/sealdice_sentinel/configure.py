@@ -157,47 +157,87 @@ LOGIN_ADAPTERS: tuple[LoginAdapter, ...] = (YogurtAdapter(),)
 
 
 _PAGE_STYLE = """
-:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-        background: #07111f; color: #e7eef9; }
+:root { font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        background: #f2f4f7; color: #3f4752; }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; background:
-       radial-gradient(circle at 15% -10%, #173e68 0, transparent 34rem),
-       radial-gradient(circle at 100% 10%, #183d35 0, transparent 30rem), #07111f; }
-main { max-width: 1120px; margin: 0 auto; padding: 48px 24px 80px; }
-.hero { display: flex; justify-content: space-between; gap: 28px; align-items: end; margin-bottom: 30px; }
-.eyebrow { color: #70e1c1; text-transform: uppercase; letter-spacing: .16em; font-size: .72rem;
-           font-weight: 800; }
-h1 { margin: 8px 0; font-size: clamp(2rem, 5vw, 3.4rem); letter-spacing: -.045em; }
-h2 { margin: 0 0 18px; font-size: 1.15rem; } h3 { margin: 6px 0; }
-.muted { color: #94a7bd; } .ok { color: #72e4ad; } .error { color: #ff9b9b; }
-.card { background: rgba(12, 27, 45, .88); border: 1px solid #233d59; border-radius: 18px;
-        padding: 24px; margin: 18px 0; box-shadow: 0 18px 60px rgba(0,0,0,.24); }
-.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+html { scroll-behavior: smooth; }
+body { margin: 0; min-height: 100vh; background: #f2f4f7; }
+.topbar { position: fixed; inset: 0 0 auto 0; z-index: 20; height: 68px; display: flex;
+          align-items: center; justify-content: space-between; padding: 0 26px 0 34px;
+          background: #505b6b; color: #fff; box-shadow: 0 1px 5px rgba(24,34,47,.22); }
+.brand { font-size: 1.42rem; font-weight: 500; letter-spacing: .01em; line-height: 1.1; }
+.brand small { display: block; margin-top: 6px; font-size: .72rem; font-weight: 400; color: #e4e9ef; }
+.top-meta { display: flex; align-items: center; gap: 12px; font-size: .86rem; color: #edf2f7; }
+.version { padding: 3px 9px; border-radius: 3px; background: #43c75b; color: white; font-weight: 700; }
+.app-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; padding-top: 68px; }
+.sidebar { position: fixed; z-index: 10; top: 68px; bottom: 0; width: 220px; padding: 15px 0;
+           overflow-y: auto; background: #505b6b; color: #eaf0f6; }
+.nav-title { padding: 18px 25px 8px; color: #bfc8d3; font-size: .68rem; letter-spacing: .13em;
+             text-transform: uppercase; }
+.nav-link { display: flex; align-items: center; gap: 12px; min-height: 53px; padding: 0 24px;
+            color: #f2f5f8; text-decoration: none; border-left: 3px solid transparent; }
+.nav-link:hover, .nav-link.active { background: #46515f; border-left-color: #3da2ff; }
+.nav-link.active { color: #67b7ff; }
+.nav-icon { width: 18px; text-align: center; font-size: 1rem; opacity: .95; }
+main { grid-column: 2; width: 100%; max-width: 1500px; padding: 36px 38px 80px; }
+[id] { scroll-margin-top: 84px; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px;
+                margin: 0 0 24px; }
+.page-heading h1 { margin: 0 0 6px; font-size: 1.55rem; font-weight: 600; color: #3d4652; }
+.page-heading p { margin: 0; }
+h1 { margin: 0; } h2 { margin: 0; font-size: 1rem; font-weight: 600; color: #454e59; }
+h3 { margin: 6px 0; }
+.muted { color: #89919c; } .ok { color: #2ba55d; } .error { color: #d9534f; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+                   padding-bottom: 15px; margin-bottom: 8px; border-bottom: 1px solid #e8ebef; }
+.section-heading p { margin: 4px 0 0; font-size: .84rem; }
+.card { background: #fff; border: 1px solid #e2e6eb; border-radius: 4px; padding: 22px 24px;
+        margin: 16px 0; box-shadow: 0 1px 3px rgba(26,39,55,.06); }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .grid .card { margin: 0; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .span-2 { grid-column: span 2; }
-label { display: block; color: #c9d8e8; font-weight: 700; margin: 14px 0 7px; font-size: .9rem; }
-input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid #35516f; border-radius: 10px;
-                          background: #091827; color: #f4f8fc; font: inherit; }
+label { display: block; color: #5d6570; font-weight: 500; margin: 14px 0 7px; font-size: .86rem; }
+input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #d5dae0; border-radius: 3px;
+                          background: #fff; color: #3e4650; font: inherit; transition: border-color .15s, box-shadow .15s; }
 textarea { min-height: 88px; resize: vertical; }
-input:focus, select:focus, textarea:focus { outline: 2px solid #37cda6; border-color: transparent; }
-input[type=radio], input[type=checkbox] { width: auto; accent-color: #48d6b1; }
-button { margin-top: 18px; border: 0; border-radius: 11px; padding: 12px 18px; font: inherit;
-         font-weight: 800; background: linear-gradient(135deg, #42d6af, #4d8fff); color: #04111f;
-         cursor: pointer; box-shadow: 0 9px 24px rgba(57,199,174,.18); }
-button.secondary { background: #19324c; color: #dce8f4; box-shadow: none; border: 1px solid #35516f; }
-.connection { display: block; border: 1px solid #294764; border-radius: 12px; padding: 15px;
-              margin: 10px 0; font-weight: 400; background: #0a1b2d; cursor: pointer; }
-.connection:has(input:checked) { border-color: #4bd8b2; box-shadow: inset 0 0 0 1px #4bd8b2; }
-.pill { display: inline-flex; padding: 4px 9px; border-radius: 99px; font-size: .75rem; font-weight: 800;
-        background: #183d35; color: #79e5bd; margin-left: 8px; }
-.pill.warn { background: #4b351b; color: #ffc46b; }
-.notice { border-left: 3px solid #4bd8b2; }
+input:focus, select:focus, textarea:focus { outline: 0; border-color: #409eff;
+  box-shadow: 0 0 0 2px rgba(64,158,255,.12); }
+input[type=radio], input[type=checkbox] { width: auto; accent-color: #409eff; }
+button { margin-top: 18px; border: 1px solid #409eff; border-radius: 4px; padding: 10px 17px;
+         font: inherit; font-weight: 500; background: #409eff; color: #fff; cursor: pointer; }
+button:hover { background: #2f8ee5; border-color: #2f8ee5; }
+button.secondary { background: #fff; color: #409eff; box-shadow: none; }
+button.secondary:hover { background: #ecf5ff; }
+.connection { display: block; border: 1px solid #e1e5ea; border-radius: 4px; padding: 14px 16px;
+              margin: 10px 0; font-weight: 400; background: #fafbfc; cursor: pointer; line-height: 1.65; }
+.connection:has(input:checked) { border-color: #409eff; box-shadow: inset 3px 0 0 #409eff; background: #f5faff; }
+.pill { display: inline-flex; padding: 3px 8px; border-radius: 3px; font-size: .72rem; font-weight: 600;
+        background: #e7f7ec; color: #2ba55d; margin-left: 8px; }
+.pill.warn { background: #fff3df; color: #d98b19; }
+.notice { border-left: 3px solid #409eff; }
 .actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-code { overflow-wrap: anywhere; color: #9fd4ff; }
-details { margin-top: 16px; color: #a9bad0; } summary { cursor: pointer; font-weight: 700; }
-@media (max-width: 760px) { .hero { display: block; } .grid, .field-grid { grid-template-columns: 1fr; }
-  .span-2 { grid-column: span 1; } main { padding: 28px 14px 60px; } }
+code { overflow-wrap: anywhere; color: #337ab7; background: #f1f4f7; padding: 2px 5px; border-radius: 2px; }
+details { margin-top: 16px; color: #737c87; } summary { cursor: pointer; font-weight: 600; }
+.login-shell { min-height: 100vh; display: grid; place-items: center; padding: 92px 18px 32px; }
+.login-panel { grid-column: auto; width: min(430px, 100%); padding: 0; }
+.login-panel .card { padding: 30px; }
+.login-panel h1 { margin: 0 0 7px; color: #3f4854; font-size: 1.5rem; }
+@media (max-width: 900px) {
+  .app-shell { display: block; padding-top: 118px; }
+  .sidebar { top: 68px; right: 0; bottom: auto; width: auto; height: 50px; display: flex;
+             padding: 0; overflow-x: auto; overflow-y: hidden; }
+  .nav-title { display: none; } .nav-link { min-width: max-content; min-height: 50px; padding: 0 16px;
+    border-left: 0; border-bottom: 3px solid transparent; }
+  .nav-link:hover, .nav-link.active { border-left-color: transparent; border-bottom-color: #409eff; }
+  main { padding: 26px 18px 60px; }
+}
+@media (max-width: 700px) {
+  .topbar { padding: 0 16px; } .top-meta span:not(.version) { display: none; }
+  .grid, .field-grid { grid-template-columns: 1fr; } .span-2 { grid-column: span 1; }
+  .page-heading { display: block; } .page-heading .pill { margin: 10px 0 0; }
+  .card { padding: 18px 16px; }
+}
 """
 
 
@@ -583,9 +623,9 @@ def _render_page(
             security = str(smtp.get("security", "tls"))
             update_mode = str(updates.get("mode", "notify"))
             connection_html = f"""
-            <section class="card">
-              <h2>选择 QQ 连接</h2>
-              <p class="muted">扫描不会修改文件；只有点击页面底部的保存按钮才会写入。</p>
+            <section class="card" id="connections">
+              <div class="section-heading"><div><h2>QQ 连接设置</h2>
+              <p class="muted">选择要由豹骰监控台管理的 Yogurt/Milky 连接。</p></div></div>
               <form method="post">
                 <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
                 <input type="hidden" name="action" value="apply">
@@ -594,8 +634,9 @@ def _render_page(
                 {''.join(choices)}
 
                 <div class="grid">
-                  <section class="card">
-                    <h2>Milky 与 WebHook</h2>
+                  <section class="card" id="milky-settings">
+                    <div class="section-heading"><div><h2>Milky 与 WebHook</h2>
+                      <p class="muted">API 鉴权、事件回调及连通性配置</p></div></div>
                     <div class="field-grid">
                       <div class="span-2"><label>Milky API 地址</label>
                         <input name="milky_base_url" value="{_escape(milky.get('base_url', connections[0].base_url))}"></div>
@@ -617,8 +658,9 @@ def _render_page(
                     </div>
                   </section>
 
-                  <section class="card">
-                    <h2>邮件通知</h2>
+                  <section class="card" id="mail-settings">
+                    <div class="section-heading"><div><h2>邮件通知</h2>
+                      <p class="muted">SMTP 发件账号与骰主收件地址</p></div></div>
                     <div class="field-grid">
                       <div><label>SMTP 主机</label><input name="smtp_host" value="{_escape(smtp.get('host', ''))}"></div>
                       <div><label>SMTP 端口</label><input type="number" min="1" max="65535"
@@ -638,8 +680,9 @@ def _render_page(
                   </section>
                 </div>
 
-                <section class="card">
-                  <h2>更新策略</h2>
+                <section class="card" id="update-settings">
+                  <div class="section-heading"><div><h2>更新策略</h2>
+                    <p class="muted">控制新版提醒、自动安装与 GitHub 访问</p></div></div>
                   <div class="field-grid">
                     <div><label>更新模式</label><select name="update_mode">
                       <option value="notify"{' selected' if update_mode == 'notify' else ''}>仅通知</option>
@@ -679,15 +722,29 @@ def _render_page(
 
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>SealDice Sentinel 配置助手</title><style>{_PAGE_STYLE}</style></head>
-<body><main>
-  <header class="hero"><div><div class="eyebrow">Sentinel Control</div>
-    <h1>守望你的骰子</h1>
-    <p class="muted">发现连接、同步鉴权并管理通知配置。</p></div>
+<title>豹骰监控台 · 配置中心</title><style>{_PAGE_STYLE}</style></head>
+<body>
+<header class="topbar"><div class="brand">豹骰监控台<small>SealDice Sentinel</small></div>
+  <div class="top-meta"><span>独立监控服务</span><span class="version">v0.3.1</span></div></header>
+<div class="app-shell">
+<aside class="sidebar" aria-label="配置导航">
+  <div class="nav-title">监控台</div>
+  <a class="nav-link active" href="#overview"><span class="nav-icon">⌂</span>配置首页</a>
+  <a class="nav-link" href="#connections"><span class="nav-icon">⌁</span>QQ 连接</a>
+  <a class="nav-link" href="#milky-settings"><span class="nav-icon">◇</span>Milky 设置</a>
+  <a class="nav-link" href="#mail-settings"><span class="nav-icon">✉</span>邮件通知</a>
+  <a class="nav-link" href="#update-settings"><span class="nav-icon">↻</span>更新管理</a>
+  <div class="nav-title">说明</div>
+  <a class="nav-link" href="#help"><span class="nav-icon">?</span>使用提示</a>
+</aside>
+<main id="overview">
+  <header class="page-heading"><div><h1>配置中心</h1>
+    <p class="muted">扫描 SealDice，管理连接、通知和更新设置。</p></div>
     <div class="pill">安全会话已启用</div></header>
   {status_html}
-  <section class="card notice">
-    <h2>① 定位 SealDice</h2>
+  <section class="card notice" id="discovery">
+    <div class="section-heading"><div><h2>定位 SealDice</h2>
+      <p class="muted">扫描只读取配置；点击保存后才会写入，并自动创建备份。</p></div></div>
     <form method="post">
       <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
       <input type="hidden" name="action" value="discover">
@@ -699,23 +756,29 @@ def _render_page(
     </form>
   </section>
   {connection_html}
-</main></body></html>"""
+  <section class="card" id="help"><div class="section-heading"><div><h2>使用提示</h2>
+    <p class="muted">敏感字段留空表示保持原值；应用配置后按页面提示重启服务。</p></div></div>
+    <p class="muted">公网访问配置页时，请限制来源 IP，并优先使用 HTTPS 反向代理。</p>
+  </section>
+</main></div></body></html>"""
 
 
 def _render_login(csrf_token: str, error: str | None = None) -> str:
     error_html = f'<p class="error">{_escape(error)}</p>' if error else ""
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>登录 · SealDice Sentinel</title><style>{_PAGE_STYLE}</style></head>
-<body><main><h1>SealDice Sentinel</h1><section class="card">
-  <h2>配置页登录</h2>{error_html}
+<title>登录 · 豹骰监控台</title><style>{_PAGE_STYLE}</style></head>
+<body><header class="topbar"><div class="brand">豹骰监控台<small>SealDice Sentinel</small></div>
+  <div class="top-meta"><span class="version">安全登录</span></div></header>
+<div class="login-shell"><main class="login-panel"><section class="card">
+  <h1>登录豹骰监控台</h1><p class="muted">请输入独立的配置页密码。</p>{error_html}
   <form method="post" action="/login">
     <input type="hidden" name="csrf_token" value="{_escape(csrf_token)}">
     <label for="password">页面密码</label>
     <input id="password" name="password" type="password" required autocomplete="current-password">
     <button type="submit">登录</button>
   </form>
-</section></main></body></html>"""
+</section></main></div></body></html>"""
 
 
 def _read_secret(environment_name: str, secrets_file: Path) -> str | None:

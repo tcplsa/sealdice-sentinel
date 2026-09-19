@@ -226,6 +226,8 @@ def test_web_page_never_renders_access_token(tmp_path) -> None:
     assert "Access Token：已配置" in page
     assert 'value="monitor@example.com"' in page
     assert "owner@example.com" in page
+    assert "豹骰监控台" in page
+    assert 'class="sidebar"' in page
 
 
 def test_web_ui_discovers_without_exposing_token(tmp_path) -> None:

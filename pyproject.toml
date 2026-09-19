@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sealdice-sentinel"
-version = "0.3.0"
+version = "0.3.1"
 description = "Independent monitoring service for SealDice and Yogurt/Milky"
 requires-python = ">=3.11"
 dependencies = [

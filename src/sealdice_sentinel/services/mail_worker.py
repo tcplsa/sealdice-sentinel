@@ -38,4 +38,7 @@ class MailWorker:
                 await self._outbox.mark_failed(notification.dedup_key, str(exc))
             else:
                 await self._outbox.mark_sent(notification.dedup_key)
-
+                self._logger.info(
+                    "notification sent: %s",
+                    notification.subject,
+                )

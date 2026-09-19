@@ -16,16 +16,18 @@ class EventProcessor:
         self._notifications = notifications
         self._incidents = incidents
 
-    async def process(self, event: MilkyEvent) -> None:
+    async def process(self, event: MilkyEvent, confirms_live_session: bool = True) -> None:
         if event.event_type == "bot_offline":
             await self._bot_offline(event)
             return
 
-        await self._incidents.report_healthy(
-            ServiceName.QQ,
-            checked_at=event.occurred_at,
-            source=f"milky:{event.event_type}",
-        )
+        if confirms_live_session:
+            await self._incidents.report_healthy(
+                ServiceName.QQ,
+                checked_at=event.occurred_at,
+                source=f"milky:{event.event_type}",
+                record_sample=False,
+            )
         handlers = {
             "friend_request": self._friend_request,
             "group_invitation": self._group_invitation,

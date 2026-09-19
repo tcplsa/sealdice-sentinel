@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import signal
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .adapters.health import MilkyProcessProbe, MilkySessionProbe, SealDiceHttpProbe
@@ -19,6 +20,31 @@ from .services.mail_worker import MailWorker
 from .services.notification_service import NotificationService
 from .services.reconciliation import ReconciliationService
 from .services.sealdice_log_monitor import SealDiceJournalMonitor
+
+
+async def supervise(
+    name: str,
+    runner: Callable[[asyncio.Event], Awaitable[None]],
+    stop: asyncio.Event,
+    restart_delay_seconds: int = 5,
+) -> None:
+    """Keep a long-running worker alive until the application is stopping."""
+    logger = logging.getLogger(__name__)
+    while not stop.is_set():
+        try:
+            await runner(stop)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("background worker crashed; restarting: %s", name)
+        else:
+            if stop.is_set():
+                return
+            logger.error("background worker exited unexpectedly; restarting: %s", name)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=restart_delay_seconds)
+        except TimeoutError:
+            pass
 
 
 async def run(config_path: Path) -> None:
@@ -90,8 +116,14 @@ async def run(config_path: Path) -> None:
 
     await webhook.start()
     tasks = [
-        asyncio.create_task(mail_worker.run(stop), name="mail-worker"),
-        asyncio.create_task(reconciliation.run(stop), name="milky-reconciliation"),
+        asyncio.create_task(
+            supervise("mail-worker", mail_worker.run, stop),
+            name="supervisor-mail-worker",
+        ),
+        asyncio.create_task(
+            supervise("milky-reconciliation", reconciliation.run, stop),
+            name="supervisor-milky-reconciliation",
+        ),
     ]
     if config.sealdice.journal_monitor_enabled and config.sealdice.systemd_unit:
         journal_monitor = SealDiceJournalMonitor(
@@ -101,10 +133,16 @@ async def run(config_path: Path) -> None:
             failure_window_seconds=config.sealdice.log_failure_window_seconds,
         )
         tasks.append(
-            asyncio.create_task(journal_monitor.run(stop), name="sealdice-journal-monitor")
+            asyncio.create_task(
+                supervise("sealdice-journal-monitor", journal_monitor.run, stop),
+                name="supervisor-sealdice-journal-monitor",
+            )
         )
     tasks.extend(
-        asyncio.create_task(monitor.run(stop), name=f"health-monitor-{index}")
+        asyncio.create_task(
+            supervise(f"health-monitor-{index}", monitor.run, stop),
+            name=f"supervisor-health-monitor-{index}",
+        )
         for index, monitor in enumerate(monitors, start=1)
     )
     logger.info(

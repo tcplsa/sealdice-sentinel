@@ -65,7 +65,9 @@ class ReconciliationService:
                 raw=raw,
             )
             if await self._events.record_event(event):
-                await self._processor.process(event)
+                # A historical event discovered through polling does not prove that
+                # the QQ session is currently alive.
+                await self._processor.process(event, confirms_live_session=False)
 
         checked_at = datetime.now(UTC)
         current_groups = await self._gateway.get_groups()

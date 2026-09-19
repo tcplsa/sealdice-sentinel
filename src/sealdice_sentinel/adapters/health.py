@@ -60,6 +60,11 @@ class MilkySessionProbe(_MilkyProbe):
             healthy, reason = await self._call("get_login_info", {})
             if healthy:
                 healthy, reason = await self._call("get_group_list", {"no_cache": True})
+            if healthy:
+                healthy, reason = await self._call(
+                    "get_friend_requests",
+                    {"limit": 1, "is_filtered": False},
+                )
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             healthy = False
             reason = f"{type(exc).__name__}: {exc}"

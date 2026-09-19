@@ -55,15 +55,17 @@ class IncidentService:
         checked_at: datetime,
         source: str,
         latency_ms: int | None = None,
+        record_sample: bool = True,
     ) -> bool:
-        await self._repository.record_health_sample(
-            HealthSample(
-                service=service,
-                healthy=True,
-                checked_at=checked_at,
-                latency_ms=latency_ms,
+        if record_sample:
+            await self._repository.record_health_sample(
+                HealthSample(
+                    service=service,
+                    healthy=True,
+                    checked_at=checked_at,
+                    latency_ms=latency_ms,
+                )
             )
-        )
         incident = await self._repository.close_incident(service.value, checked_at, source)
         if incident is None:
             return False
