@@ -4,7 +4,7 @@
 
 ```text
                          ┌────────────────────┐
-                         │   手机邮箱 / 骰主   │
+                         │ 手机邮箱 / 骰主 QQ  │
                          └─────────▲──────────┘
                                    │ SMTP 邮件
 ┌──────────┐ WebSocket ┌───────────┴──────────┐
@@ -35,7 +35,8 @@
 - `MilkyClient`：调用 Yogurt HTTP API。
 - `WebhookServer`：接收 Yogurt 推送事件。
 - `SealDiceProbe`：检查 SealDice 状态。
-- `SmtpMailer`：发送邮件。
+- `SmtpMailer`：发送故障和 QQ 失败兜底邮件。
+- `MilkyQqNotifier`：把日常业务事件私聊给骰主 QQ。
 - `TokenUsageSource`：接收聊天插件用量。
 - `GitHubReleaseSource`：检查指定仓库的稳定 Release 并下载发布资产。
 - `UpdateInstaller`：通过独立更新助手安装、验证和回滚版本。
@@ -49,7 +50,7 @@
 - `FriendRequestMonitor`：好友申请实时与补偿查询。
 - `GroupMonitor`：群邀请和群列表差异检测。
 - `UsageAggregator`：Token 聚合和阈值判断。
-- `NotificationService`：邮件模板、抑制、队列和重试。
+- `NotificationService`：邮件/QQ 通道路由、抑制、队列和重试。
 - `UpdateService`：版本比较、更新策略、审计和更新通知。
 
 ### storage

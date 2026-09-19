@@ -9,6 +9,7 @@ import re
 import secrets
 import shlex
 import shutil
+import sqlite3
 import tempfile
 import time
 from collections import defaultdict, deque
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import yaml
 from aiohttp import web
@@ -485,6 +487,26 @@ def apply_configuration(
     if overrides.get("smtp_recipients"):
         smtp["recipients"] = list(overrides["smtp_recipients"])
 
+    notification_settings = sentinel_document.setdefault("notifications", {})
+    if not isinstance(notification_settings, dict):
+        raise TypeError("Sentinel notifications 配置必须是对象")
+    if "owner_qq" in overrides:
+        raw_owner_qq = str(overrides.get("owner_qq", "")).strip()
+        if raw_owner_qq and (not raw_owner_qq.isdecimal() or int(raw_owner_qq) <= 0):
+            raise ValueError("骰主 QQ 必须是正整数")
+        notification_settings["owner_qq"] = int(raw_owner_qq) if raw_owner_qq else None
+    if "daily_report_time" in overrides:
+        daily_report_time = str(overrides.get("daily_report_time", "")).strip()
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_report_time):
+            raise ValueError("Token 日报时间必须使用 HH:MM 格式")
+        notification_settings["daily_report_time"] = daily_report_time
+
+    token_usage = sentinel_document.setdefault("token_usage", {})
+    if not isinstance(token_usage, dict):
+        raise TypeError("Sentinel token_usage 配置必须是对象")
+    if "token_usage_enabled" in overrides:
+        token_usage["enabled"] = bool(overrides["token_usage_enabled"])
+
     updates = sentinel_document.setdefault("updates", {})
     if not isinstance(updates, dict):
         raise TypeError("Sentinel updates 配置必须是对象")
@@ -572,12 +594,24 @@ def _render_page(
     error: str | None = None,
     settings: dict[str, Any] | None = None,
     secret_states: dict[str, bool] | None = None,
+    usage_summary: dict[str, Any] | None = None,
 ) -> str:
     settings = settings or {}
     secret_states = secret_states or {}
+    usage_summary = usage_summary or {}
     milky = settings.get("milky", {}) if isinstance(settings.get("milky", {}), dict) else {}
     smtp = settings.get("smtp", {}) if isinstance(settings.get("smtp", {}), dict) else {}
+    notification_settings = (
+        settings.get("notifications", {})
+        if isinstance(settings.get("notifications", {}), dict)
+        else {}
+    )
     updates = settings.get("updates", {}) if isinstance(settings.get("updates", {}), dict) else {}
+    token_usage = (
+        settings.get("token_usage", {})
+        if isinstance(settings.get("token_usage", {}), dict)
+        else {}
+    )
 
     connection_html = ""
     if connections is not None:
@@ -643,6 +677,11 @@ def _render_page(
                       <div class="span-2"><label>Milky Access Token</label>
                         <input type="password" name="milky_access_token" autocomplete="new-password"
                           placeholder="{'已设置；留空保持不变' if connections[0].access_token else '可设置新的 API Token'}"></div>
+                      <div class="span-2"><label>骰主 QQ</label>
+                        <input name="owner_qq" inputmode="numeric" pattern="[1-9][0-9]*"
+                          value="{_escape(notification_settings.get('owner_qq') or '')}"
+                          placeholder="好友申请、群邀请和群变化将私聊此账号">
+                        <span class="muted">需先确保该账号是骰子的 QQ 好友；留空则继续使用邮件通知。</span></div>
                       <div><label>WebHook 监听地址</label>
                         <input name="webhook_host" value="{_escape(milky.get('webhook_host', '127.0.0.1'))}"></div>
                       <div><label>WebHook 端口</label>
@@ -693,6 +732,18 @@ def _render_page(
                   </div>
                 </section>
 
+                <section class="card" id="token-settings">
+                  <div class="section-heading"><div><h2>Token 日报</h2>
+                    <p class="muted">每次调用只在本机落库，每天汇总一次并私聊骰主 QQ。</p></div></div>
+                  <div class="field-grid">
+                    <div><label><input type="checkbox" name="token_usage_enabled" value="yes"
+                      {' checked' if token_usage.get('enabled', True) else ''}> 启用每日 Token 日报</label></div>
+                    <div><label>发送时间</label><input type="time" name="daily_report_time"
+                      value="{_escape(notification_settings.get('daily_report_time', '08:00'))}"></div>
+                  </div>
+                  <p class="muted">日报统计前一个自然日，只按群汇总；无用量时不发送。</p>
+                </section>
+
                 <div class="actions">
                   <button type="submit">备份并保存全部配置</button>
                   <span class="muted">Token 留空表示保持原值；保存后会再次验证 WebHook 是否一致。</span>
@@ -720,12 +771,37 @@ def _render_page(
         </section>
         """
 
+    if usage_summary.get("available"):
+        usage_html = f"""
+        <section class="card" id="token-usage">
+          <div class="section-heading"><div><h2>DeepSeek Token 用量</h2>
+            <p class="muted">数据来自 API 响应中的精确 usage，不保存聊天正文。</p></div></div>
+          <div class="field-grid">
+            <div><label>今日请求</label><strong>{_escape(usage_summary['today_requests'])}</strong></div>
+            <div><label>今日总 Token</label><strong>{_escape(usage_summary['today_total'])}</strong></div>
+            <div><label>今日输入 / 输出</label><strong>{_escape(usage_summary['today_input'])} / {_escape(usage_summary['today_output'])}</strong></div>
+            <div><label>今日缓存命中</label><strong>{_escape(usage_summary['today_cached'])}</strong></div>
+            <div><label>本月请求</label><strong>{_escape(usage_summary['month_requests'])}</strong></div>
+            <div><label>本月总 Token</label><strong>{_escape(usage_summary['month_total'])}</strong></div>
+            <div><label>本月输入 / 输出</label><strong>{_escape(usage_summary['month_input'])} / {_escape(usage_summary['month_output'])}</strong></div>
+            <div><label>本月推理 Token</label><strong>{_escape(usage_summary['month_reasoning'])}</strong></div>
+          </div>
+        </section>
+        """
+    else:
+        usage_html = """
+        <section class="card" id="token-usage"><div class="section-heading"><div>
+          <h2>DeepSeek Token 用量</h2>
+          <p class="muted">尚无上报数据。启用聊天插件中的 Sentinel Token Usage Reporting 后会在这里显示。</p>
+        </div></div></section>
+        """
+
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>豹骰监控台 · 配置中心</title><style>{_PAGE_STYLE}</style></head>
 <body>
 <header class="topbar"><div class="brand">豹骰监控台<small>SealDice Sentinel</small></div>
-  <div class="top-meta"><span>独立监控服务</span><span class="version">v0.3.1</span></div></header>
+  <div class="top-meta"><span>独立监控服务</span><span class="version">v0.4.0</span></div></header>
 <div class="app-shell">
 <aside class="sidebar" aria-label="配置导航">
   <div class="nav-title">监控台</div>
@@ -734,6 +810,7 @@ def _render_page(
   <a class="nav-link" href="#milky-settings"><span class="nav-icon">◇</span>Milky 设置</a>
   <a class="nav-link" href="#mail-settings"><span class="nav-icon">✉</span>邮件通知</a>
   <a class="nav-link" href="#update-settings"><span class="nav-icon">↻</span>更新管理</a>
+  <a class="nav-link" href="#token-usage"><span class="nav-icon">▦</span>Token 用量</a>
   <div class="nav-title">说明</div>
   <a class="nav-link" href="#help"><span class="nav-icon">?</span>使用提示</a>
 </aside>
@@ -742,6 +819,7 @@ def _render_page(
     <p class="muted">扫描 SealDice，管理连接、通知和更新设置。</p></div>
     <div class="pill">安全会话已启用</div></header>
   {status_html}
+  {usage_html}
   <section class="card notice" id="discovery">
     <div class="section-heading"><div><h2>定位 SealDice</h2>
       <p class="muted">扫描只读取配置；点击保存后才会写入，并自动创建备份。</p></div></div>
@@ -804,6 +882,66 @@ def _load_settings(path: Path) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise TypeError("Sentinel 配置根节点必须是对象")
     return document
+
+
+def _load_usage_summary(settings: dict[str, Any]) -> dict[str, Any]:
+    app = settings.get("app", {}) if isinstance(settings.get("app", {}), dict) else {}
+    raw_path = str(app.get("database_path", "")).strip()
+    if not raw_path:
+        return {"available": False}
+    database_path = Path(raw_path)
+    if not database_path.is_file():
+        return {"available": False}
+
+    try:
+        timezone = ZoneInfo(str(app.get("timezone", "UTC")))
+    except (KeyError, ValueError):
+        timezone = UTC
+    now = datetime.now(timezone)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    month_start = day_start.replace(day=1)
+
+    def totals(db: sqlite3.Connection, start: datetime) -> tuple[int, ...]:
+        row = db.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(input_tokens), 0),
+                   COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0),
+                   COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(reasoning_tokens), 0)
+            FROM token_usage WHERE occurred_at >= ?
+            """,
+            (start.isoformat(),),
+        ).fetchone()
+        assert row is not None
+        return tuple(int(value) for value in row)
+
+    try:
+        with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=2) as db:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_usage'"
+            ).fetchone()
+            if exists is None:
+                return {"available": False}
+            today = totals(db, day_start)
+            month = totals(db, month_start)
+    except (OSError, sqlite3.Error):
+        return {"available": False}
+
+    def display(value: int) -> str:
+        return f"{value:,}"
+
+    return {
+        "available": True,
+        "today_requests": display(today[0]),
+        "today_input": display(today[1]),
+        "today_output": display(today[2]),
+        "today_total": display(today[3]),
+        "today_cached": display(today[4]),
+        "month_requests": display(month[0]),
+        "month_input": display(month[1]),
+        "month_output": display(month[2]),
+        "month_total": display(month[3]),
+        "month_reasoning": display(month[5]),
+    }
 
 
 def _secret_states(settings: dict[str, Any], secrets_file: Path | None) -> dict[str, bool]:
@@ -932,6 +1070,7 @@ def create_web_app(
                 str(default_config_path),
                 settings=settings,
                 secret_states=_secret_states(settings, secrets_file),
+                usage_summary=_load_usage_summary(settings),
             ),
             content_type="text/html",
         )
@@ -963,6 +1102,9 @@ def create_web_app(
                 overrides = {
                     "milky_base_url": str(form.get("milky_base_url", "")).strip(),
                     "milky_access_token": str(form.get("milky_access_token", "")).strip(),
+                    "owner_qq": str(form.get("owner_qq", "")).strip(),
+                    "token_usage_enabled": form.get("token_usage_enabled") == "yes",
+                    "daily_report_time": str(form.get("daily_report_time", "08:00")).strip(),
                     "webhook_host": str(form.get("webhook_host", "")).strip(),
                     "webhook_port": str(form.get("webhook_port", "")).strip(),
                     "webhook_path": str(form.get("webhook_path", "")).strip(),
@@ -999,6 +1141,7 @@ def create_web_app(
                 error,
                 settings,
                 _secret_states(settings, secrets_file),
+                _load_usage_summary(settings),
             ),
             content_type="text/html",
         )

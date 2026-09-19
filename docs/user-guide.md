@@ -1,13 +1,13 @@
 # SealDice Sentinel 使用手册（第一版）
 
 本手册面向 Ubuntu 部署，覆盖首次安装、Yogurt（Milky）接入、邮件通知、更新与回滚。
-Token 用量统计暂不在本版范围内。
+DeepSeek Token 用量采集和基础看板已经可用；费用估算、明细筛选和阈值通知仍属于后续工作。
 
 ## 1. 工作方式
 
 Sentinel 独立于 SealDice 和 Yogurt 运行。它通过 Yogurt 的 Milky HTTP 接口与 WebHook
-判断 QQ 是否在线、补查好友请求与群列表，并通过 SMTP 把故障、恢复、好友申请、群邀请、
-实际进群和退群等消息发到骰主邮箱。
+判断 QQ 是否在线并补查好友请求与群列表。好友申请、群邀请、实际进群和退群等日常事件可
+直接由骰子私聊骰主 QQ；掉线、服务故障以及 QQ 通知失败兜底仍通过 SMTP 发到骰主邮箱。
 
 程序使用以下固定目录：
 
@@ -76,6 +76,7 @@ Token 是否存在，不显示其内容。完成后在服务器按 `Ctrl+C` 关�
 扫描完成后的页面可以统一管理：
 
 - Milky API 地址与 Access Token；
+- 骰主 QQ（日常事件的私聊接收账号）；
 - WebHook 监听地址、端口、路径与 Token；
 - SMTP 主机、端口、加密方式、账号、发件地址和多个收件地址；
 - 邮箱授权码、GitHub Token 和自动更新策略。
@@ -195,6 +196,43 @@ SEALDICE_MONITOR_SMTP_PASSWORD=邮箱授权码
 ```
 
 不要把真实密码写进 `config.yaml` 或提交到 GitHub。
+
+### 配置骰主 QQ 通知
+
+在豹骰监控台填写“骰主 QQ”，或手工修改：
+
+```yaml
+notifications:
+  owner_qq: 123456789
+```
+
+该账号必须已经是骰子 QQ 的好友。好友申请、群邀请、实际进群和群聊移除会先写入持久化
+Outbox，再通过 Milky `send_private_message` 私聊此账号。若发送失败，QQ 任务保留并按退避
+策略重试，同时生成一封邮件兜底；QQ 掉线和服务故障始终直接使用邮件，因为故障时不能依赖
+同一条 QQ 通道。`owner_qq` 留空或设为 `null` 时，日常事件继续发送邮件。
+
+### 配置 DeepSeek Token 用量采集
+
+DeepSeek 控制台不能提供本项目需要的群和调用类型维度，因此由聊天插件读取每次 API
+响应中的 `usage` 并上报到 Sentinel。统计值来自 DeepSeek 响应，不使用字符数估算。
+
+在 SealDice WebUI 的 `deepseek-memory-chat-v2` 插件设置中填写：
+
+- `Sentinel Token Usage Reporting`：开启；
+- `Sentinel Token Usage Endpoint`：同机部署时填写 `http://127.0.0.1:18100/api/token-usage`；
+- `Sentinel Token`：填写 Sentinel 配置里的 `milky.webhook_token`。
+
+插件只发送请求 ID、模型、Token 数、耗时、群号和调用类型，不发送用户 QQ、提示词、聊天
+正文、模型回复或 DeepSeek API Key。上报失败只写一次 SealDice 日志，不影响聊天；相同 DeepSeek
+请求 ID 重试上报不会重复计数。
+
+数据保存在 Sentinel 数据库的 `token_usage` 表。当前记录的调用类型包括普通回复、直接回复
+审核、主动插话判定、主动插话生成、主动插话审核、用户档案整理和群风格整理。重新打开
+豹骰监控台即可查看今日和本月的基础汇总。
+
+Token 记录仍在每次 DeepSeek 调用结束后通过本机地址写入数据库，但这不是 QQ 消息。Sentinel
+默认每天北京时间 `08:00` 将前一个自然日按群汇总成一条私聊消息发送给骰主；当天没有用量
+则不发送。可在豹骰监控台的“Token 日报”中关闭日报或修改发送时间。
 
 ## 8. 启动与检查
 

@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .adapters.health import MilkyProcessProbe, MilkySessionProbe, SealDiceHttpProbe
-from .adapters.milky import MilkyApiClient
+from .adapters.milky import MilkyApiClient, MilkyQqNotifier
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
 from .adapters.webhook import MilkyWebhookServer
@@ -20,6 +20,7 @@ from .services.mail_worker import MailWorker
 from .services.notification_service import NotificationService
 from .services.reconciliation import ReconciliationService
 from .services.sealdice_log_monitor import SealDiceJournalMonitor
+from .services.token_usage_reporter import DailyTokenUsageReporter
 
 
 async def supervise(
@@ -66,7 +67,7 @@ async def run(config_path: Path) -> None:
         retry_max_seconds=config.smtp.retry_max_seconds,
     )
     await store.initialize()
-    notifications = NotificationService(store)
+    notifications = NotificationService(store, owner_qq=config.notifications.owner_qq)
     incidents = IncidentService(store, notifications)
     processor = EventProcessor(notifications, incidents)
     webhook = MilkyWebhookServer(
@@ -76,10 +77,16 @@ async def run(config_path: Path) -> None:
         token=config.milky.webhook_token,
         repository=store,
         processor=processor,
+        usage_repository=store,
     )
-    mail_worker = MailWorker(store, SmtpMailer(config.smtp))
+    milky_gateway = MilkyApiClient(config.milky.base_url, config.milky.access_token)
+    mail_worker = MailWorker(
+        store,
+        SmtpMailer(config.smtp),
+        qq_sender=MilkyQqNotifier(milky_gateway),
+    )
     reconciliation = ReconciliationService(
-        gateway=MilkyApiClient(config.milky.base_url, config.milky.access_token),
+        gateway=milky_gateway,
         events=store,
         groups=store,
         processor=processor,
@@ -125,6 +132,19 @@ async def run(config_path: Path) -> None:
             name="supervisor-milky-reconciliation",
         ),
     ]
+    if config.token_usage.enabled:
+        usage_reporter = DailyTokenUsageReporter(
+            repository=store,
+            notifications=notifications,
+            timezone=config.timezone,
+            report_time=config.notifications.daily_report_time,
+        )
+        tasks.append(
+            asyncio.create_task(
+                supervise("daily-token-usage-reporter", usage_reporter.run, stop),
+                name="supervisor-daily-token-usage-reporter",
+            )
+        )
     if config.sealdice.journal_monitor_enabled and config.sealdice.systemd_unit:
         journal_monitor = SealDiceJournalMonitor(
             systemd_unit=config.sealdice.systemd_unit,

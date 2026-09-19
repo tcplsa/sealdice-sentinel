@@ -46,6 +46,17 @@ class SmtpConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class NotificationConfig:
+    owner_qq: int | None = None
+    daily_report_time: str = "08:00"
+
+
+@dataclass(slots=True, frozen=True)
+class TokenUsageConfig:
+    enabled: bool = True
+
+
+@dataclass(slots=True, frozen=True)
 class UpdateConfig:
     enabled: bool
     repository: str
@@ -68,6 +79,8 @@ class AppConfig:
     milky: MilkyConfig
     sealdice: SealDiceConfig
     smtp: SmtpConfig
+    notifications: NotificationConfig
+    token_usage: TokenUsageConfig
     updates: UpdateConfig
     raw: dict[str, Any]
 
@@ -78,11 +91,20 @@ def load_config(path: Path) -> AppConfig:
     milky = data["milky"]
     sealdice = data["sealdice"]
     smtp = data["smtp"]
+    notifications = data.get("notifications", {})
+    token_usage = data.get("token_usage", {})
     updates = data["updates"]
     password_env = smtp["password_env"]
     password = os.environ.get(password_env)
     if not password:
         raise ValueError(f"SMTP password environment variable is missing: {password_env}")
+    raw_owner_qq = notifications.get("owner_qq") if isinstance(notifications, dict) else None
+    owner_qq = int(raw_owner_qq) if raw_owner_qq not in (None, "") else None
+    if owner_qq is not None and owner_qq <= 0:
+        raise ValueError("notifications.owner_qq must be a positive QQ number")
+    daily_report_time = str(notifications.get("daily_report_time", "08:00"))
+    if not _valid_clock_time(daily_report_time):
+        raise ValueError("notifications.daily_report_time must use HH:MM format")
 
     return AppConfig(
         timezone=app["timezone"],
@@ -101,6 +123,13 @@ def load_config(path: Path) -> AppConfig:
             retry_initial_seconds=smtp.get("retry_initial_seconds", 30),
             retry_max_seconds=smtp.get("retry_max_seconds", 3600),
         ),
+        notifications=NotificationConfig(
+            owner_qq=owner_qq,
+            daily_report_time=daily_report_time,
+        ),
+        token_usage=TokenUsageConfig(
+            enabled=bool(token_usage.get("enabled", True)),
+        ),
         updates=UpdateConfig(
             enabled=updates.get("enabled", True),
             repository=updates["repository"],
@@ -116,6 +145,14 @@ def load_config(path: Path) -> AppConfig:
         ),
         raw=data,
     )
+
+
+def _valid_clock_time(value: str) -> bool:
+    parts = value.split(":")
+    if len(parts) != 2 or not all(part.isdecimal() for part in parts):
+        return False
+    hour, minute = (int(part) for part in parts)
+    return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
 def load_update_config(path: Path) -> UpdateConfig:

@@ -29,6 +29,11 @@ class Severity(StrEnum):
     RECOVERY = "recovery"
 
 
+class NotificationChannel(StrEnum):
+    EMAIL = "email"
+    QQ = "qq"
+
+
 @dataclass(slots=True, frozen=True)
 class MilkyEvent:
     event_type: str
@@ -53,11 +58,14 @@ class Notification:
     severity: Severity
     subject: str
     body: str
+    channel: NotificationChannel = NotificationChannel.EMAIL
+    recipient: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(slots=True, frozen=True)
 class TokenUsage:
+    request_id: str
     provider: str
     model: str
     input_tokens: int
@@ -65,9 +73,11 @@ class TokenUsage:
     total_tokens: int
     occurred_at: datetime
     cached_tokens: int | None = None
+    cache_miss_tokens: int | None = None
     reasoning_tokens: int | None = None
     group_id: str | None = None
     user_id: str | None = None
+    call_type: str | None = None
     request_succeeded: bool = True
     latency_ms: int | None = None
 

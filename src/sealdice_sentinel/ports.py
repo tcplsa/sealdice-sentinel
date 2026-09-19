@@ -69,12 +69,20 @@ class NotificationOutbox(Protocol):
     async def mark_failed(self, dedup_key: str, reason: str) -> None: ...
 
 
-class Mailer(Protocol):
+class NotificationSender(Protocol):
     async def send(self, notification: Notification) -> None: ...
 
 
+# Compatibility alias for older imports.
+Mailer = NotificationSender
+
+
 class UsageRepository(Protocol):
-    async def record(self, usage: TokenUsage) -> None: ...
+    async def record(self, usage: TokenUsage) -> bool:
+        """Persist usage; return False when the provider request was already recorded."""
+        ...
+
+    async def usage_by_group(self, start, end) -> list[dict[str, Any]]: ...
 
 
 class UsageSource(Protocol):

@@ -4,6 +4,8 @@ from typing import Any
 
 import aiohttp
 
+from ..models import Notification
+
 
 class MilkyApiError(RuntimeError):
     pass
@@ -37,6 +39,15 @@ class MilkyApiClient:
         data = await self.call("get_group_list", {"no_cache": True})
         return list(data.get("groups", []))
 
+    async def send_private_message(self, user_id: int, text: str) -> None:
+        await self.call(
+            "send_private_message",
+            {
+                "user_id": user_id,
+                "message": [{"type": "text", "data": {"text": text}}],
+            },
+        )
+
     async def call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}/api/{action}"
         async with (
@@ -53,3 +64,16 @@ class MilkyApiClient:
             if not isinstance(data, dict):
                 raise MilkyApiError(f"{action} returned non-object data")
             return data
+
+
+class MilkyQqNotifier:
+    def __init__(self, client: MilkyApiClient) -> None:
+        self._client = client
+
+    async def send(self, notification: Notification) -> None:
+        if not notification.recipient or not notification.recipient.isdecimal():
+            raise ValueError("QQ notification recipient must be a numeric QQ account")
+        await self._client.send_private_message(
+            int(notification.recipient),
+            f"{notification.subject}\n\n{notification.body}",
+        )

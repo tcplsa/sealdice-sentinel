@@ -3,12 +3,22 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
 
-from ..models import HealthSample, Incident, MilkyEvent, Notification, ServiceName, Severity
+from ..models import (
+    HealthSample,
+    Incident,
+    MilkyEvent,
+    Notification,
+    NotificationChannel,
+    ServiceName,
+    Severity,
+    TokenUsage,
+)
 
 
 class SQLiteStore:
@@ -47,6 +57,8 @@ class SQLiteStore:
                     severity TEXT NOT NULL,
                     subject TEXT NOT NULL,
                     body TEXT NOT NULL,
+                    channel TEXT NOT NULL DEFAULT 'email',
+                    recipient TEXT,
                     created_at TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempts INTEGER NOT NULL DEFAULT 0,
@@ -95,8 +107,132 @@ class SQLiteStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS token_usage (
+                    provider TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    cached_tokens INTEGER,
+                    cache_miss_tokens INTEGER,
+                    reasoning_tokens INTEGER,
+                    group_id TEXT,
+                    user_id TEXT,
+                    call_type TEXT,
+                    request_succeeded INTEGER NOT NULL DEFAULT 1,
+                    latency_ms INTEGER,
+                    occurred_at TEXT NOT NULL,
+                    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(provider, request_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_token_usage_time
+                ON token_usage(occurred_at);
+
+                CREATE INDEX IF NOT EXISTS idx_token_usage_group_time
+                ON token_usage(group_id, occurred_at);
                 """
             )
+            columns = {
+                row[1] for row in db.execute("PRAGMA table_info(notification_outbox)")
+            }
+            if "channel" not in columns:
+                db.execute(
+                    "ALTER TABLE notification_outbox "
+                    "ADD COLUMN channel TEXT NOT NULL DEFAULT 'email'"
+                )
+            if "recipient" not in columns:
+                db.execute("ALTER TABLE notification_outbox ADD COLUMN recipient TEXT")
+
+    async def record(self, usage: TokenUsage) -> bool:
+        return await asyncio.to_thread(self._record_usage_sync, usage)
+
+    def _record_usage_sync(self, usage: TokenUsage) -> bool:
+        with self._connect() as db:
+            cursor = db.execute(
+                """
+                INSERT OR IGNORE INTO token_usage(
+                    provider, request_id, model, input_tokens, output_tokens,
+                    total_tokens, cached_tokens, cache_miss_tokens,
+                    reasoning_tokens, group_id, user_id, call_type,
+                    request_succeeded, latency_ms, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    usage.provider,
+                    usage.request_id,
+                    usage.model,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.total_tokens,
+                    usage.cached_tokens,
+                    usage.cache_miss_tokens,
+                    usage.reasoning_tokens,
+                    usage.group_id,
+                    usage.user_id,
+                    usage.call_type,
+                    int(usage.request_succeeded),
+                    usage.latency_ms,
+                    usage.occurred_at.isoformat(),
+                ),
+            )
+            return cursor.rowcount == 1
+
+    async def usage_by_group(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._usage_by_group_sync, start, end)
+
+    def _usage_by_group_sync(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, object]]:
+        with self._connect() as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                SELECT COALESCE(group_id, '未知群') AS group_id,
+                       COUNT(*) AS requests,
+                       COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                       COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+                       COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens
+                FROM token_usage
+                WHERE occurred_at >= ? AND occurred_at < ?
+                GROUP BY COALESCE(group_id, '未知群')
+                ORDER BY total_tokens DESC
+                """,
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
+            group_names = {
+                str(row["group_id"]): str(row["group_name"])
+                for row in db.execute("SELECT group_id, group_name FROM current_groups")
+            }
+
+        result: list[dict[str, object]] = []
+        for row in rows:
+            group_id = str(row["group_id"])
+            numeric_match = re.search(r"(\d+)$", group_id)
+            numeric_id = numeric_match.group(1) if numeric_match else group_id
+            result.append(
+                {
+                    "group_id": group_id,
+                    "group_name": group_names.get(numeric_id),
+                    "requests": int(row["requests"]),
+                    "input_tokens": int(row["input_tokens"]),
+                    "output_tokens": int(row["output_tokens"]),
+                    "total_tokens": int(row["total_tokens"]),
+                    "cached_tokens": int(row["cached_tokens"]),
+                    "reasoning_tokens": int(row["reasoning_tokens"]),
+                }
+            )
+        return result
 
     async def record_event(self, event: MilkyEvent) -> bool:
         return await asyncio.to_thread(self._record_event_sync, event)
@@ -134,14 +270,16 @@ class SQLiteStore:
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO notification_outbox(
-                    dedup_key, severity, subject, body, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    dedup_key, severity, subject, body, channel, recipient, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     notification.dedup_key,
                     notification.severity.value,
                     notification.subject,
                     notification.body,
+                    notification.channel.value,
+                    notification.recipient,
                     notification.created_at.isoformat(),
                 ),
             )
@@ -155,7 +293,7 @@ class SQLiteStore:
             db.row_factory = sqlite3.Row
             rows = db.execute(
                 """
-                SELECT dedup_key, severity, subject, body, created_at
+                SELECT dedup_key, severity, subject, body, channel, recipient, created_at
                 FROM notification_outbox
                 WHERE status = 'pending' AND next_attempt_at <= ?
                 ORDER BY created_at
@@ -169,6 +307,8 @@ class SQLiteStore:
                 severity=Severity(row["severity"]),
                 subject=row["subject"],
                 body=row["body"],
+                channel=NotificationChannel(row["channel"]),
+                recipient=row["recipient"],
                 created_at=datetime.fromisoformat(row["created_at"]),
             )
             for row in rows

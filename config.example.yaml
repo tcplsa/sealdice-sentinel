@@ -36,11 +36,12 @@ smtp:
   retry_max_seconds: 3600
 
 notifications:
+  owner_qq: null
   dedup_window_seconds: 300
-  daily_report_time: "09:00"
+  daily_report_time: "08:00"
 
 token_usage:
-  enabled: false
+  enabled: true
   daily_limit: 1000000
   alert_thresholds: [0.5, 0.8, 0.95]
   retain_detail_days: 180

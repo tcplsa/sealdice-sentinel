@@ -51,7 +51,7 @@ class EventProcessor:
     async def _friend_request(self, event: MilkyEvent) -> None:
         initiator = event.data.get("initiator_id", "未知")
         uid = event.data.get("initiator_uid", "")
-        await self._notifications.publish(
+        await self._notifications.publish_event(
             Notification(
                 dedup_key=f"friend-request:{uid or initiator}",
                 severity=Severity.INFO,
@@ -68,7 +68,7 @@ class EventProcessor:
     async def _group_invitation(self, event: MilkyEvent) -> None:
         group_id = event.data.get("group_id", "未知")
         sequence = event.data.get("invitation_seq", "未知")
-        await self._notifications.publish(
+        await self._notifications.publish_event(
             Notification(
                 dedup_key=f"group-invitation:{group_id}:{sequence}",
                 severity=Severity.INFO,

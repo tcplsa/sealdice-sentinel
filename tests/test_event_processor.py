@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 
-from sealdice_sentinel.models import Incident, MilkyEvent, ServiceName
+from sealdice_sentinel.models import Incident, MilkyEvent, NotificationChannel, ServiceName
 from sealdice_sentinel.services.event_processor import EventProcessor
 from sealdice_sentinel.services.incident_service import IncidentService
 from sealdice_sentinel.services.notification_service import NotificationService
@@ -50,6 +50,10 @@ def test_historical_reconciliation_event_does_not_recover_session() -> None:
     asyncio.run(_run_historical_event_scenario())
 
 
+def test_friend_request_routes_to_owner_qq() -> None:
+    asyncio.run(_run_owner_qq_scenario())
+
+
 async def _run_bot_offline_deduplication_scenario() -> None:
     outbox = MemoryOutbox()
     notifications = NotificationService(outbox)
@@ -95,3 +99,24 @@ async def _run_historical_event_scenario() -> None:
 
     await processor.process(event, confirms_live_session=True)
     assert ServiceName.QQ not in repository.open
+
+
+async def _run_owner_qq_scenario() -> None:
+    outbox = MemoryOutbox()
+    notifications = NotificationService(outbox, owner_qq=123456789)
+    processor = EventProcessor(
+        notifications,
+        IncidentService(MemoryIncidentRepository(), notifications),
+    )
+    event = MilkyEvent(
+        event_type="friend_request",
+        self_id=10001,
+        occurred_at=datetime.now(UTC),
+        data={"initiator_id": 20002, "initiator_uid": "uid-2", "comment": "hello"},
+        raw={},
+    )
+
+    await processor.process(event)
+    notification = outbox.items["friend-request:uid-2"]
+    assert notification.channel is NotificationChannel.QQ
+    assert notification.recipient == "123456789"

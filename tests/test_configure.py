@@ -1,6 +1,8 @@
 import asyncio
 import json
 import re
+import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from sealdice_sentinel.configure import (
     DiscoveredConnection,
+    _load_usage_summary,
     _read_secret,
     _render_page,
     apply_configuration,
@@ -17,6 +20,31 @@ from sealdice_sentinel.configure import (
     discover_connections,
     run_web_ui,
 )
+
+
+def test_usage_summary_reads_token_database(tmp_path) -> None:
+    database = tmp_path / "sentinel.db"
+    with sqlite3.connect(database) as db:
+        db.execute(
+            """
+            CREATE TABLE token_usage (
+                input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+                cached_tokens INTEGER, reasoning_tokens INTEGER, occurred_at TEXT
+            )
+            """
+        )
+        db.execute(
+            "INSERT INTO token_usage VALUES (?, ?, ?, ?, ?, ?)",
+            (100, 20, 120, 60, 5, datetime.now(UTC).isoformat()),
+        )
+
+    summary = _load_usage_summary(
+        {"app": {"database_path": str(database), "timezone": "Asia/Shanghai"}}
+    )
+    assert summary["available"] is True
+    assert summary["today_requests"] == "1"
+    assert summary["today_total"] == "120"
+    assert summary["month_reasoning"] == "5"
 
 
 def _write_yogurt_v3(root: Path, connection_id: str, port: int = 33073) -> Path:
@@ -126,6 +154,7 @@ def test_full_configuration_and_webhook_tokens_are_synchronized(tmp_path) -> Non
         sentinel_path,
         overrides={
             "milky_access_token": "new-api-token",
+            "owner_qq": "123456789",
             "webhook_token": "new-webhook-token",
             "smtp_host": "smtp.new.example",
             "smtp_port": "587",
@@ -152,6 +181,7 @@ def test_full_configuration_and_webhook_tokens_are_synchronized(tmp_path) -> Non
     assert yogurt["milky"]["http"]["accessToken"] == "new-api-token"
     assert sentinel["milky"]["access_token"] == "new-api-token"
     assert sentinel["milky"]["webhook_token"] == "new-webhook-token"
+    assert sentinel["notifications"]["owner_qq"] == 123456789
     assert sentinel["smtp"]["host"] == "smtp.new.example"
     assert sentinel["smtp"]["recipients"] == ["one@example.com", "two@example.com"]
     assert sentinel["updates"]["mode"] == "automatic"
@@ -220,12 +250,14 @@ def test_web_page_never_renders_access_token(tmp_path) -> None:
                 "from_address": "monitor@example.com",
                 "recipients": ["owner@example.com"],
             },
+            "notifications": {"owner_qq": 123456789},
         },
     )
     assert "must-not-appear" not in page
     assert "Access Token：已配置" in page
     assert 'value="monitor@example.com"' in page
     assert "owner@example.com" in page
+    assert 'value="123456789"' in page
     assert "豹骰监控台" in page
     assert 'class="sidebar"' in page
 

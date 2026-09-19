@@ -87,7 +87,7 @@ class ReconciliationService:
 
     async def _notify_group_added(self, group: dict, checked_at: datetime) -> None:
         group_id = group["group_id"]
-        await self._notifications.publish(
+        await self._notifications.publish_event(
             Notification(
                 dedup_key=f"group-added:{group_id}:{int(checked_at.timestamp())}",
                 severity=Severity.INFO,
@@ -103,7 +103,7 @@ class ReconciliationService:
 
     async def _notify_group_removed(self, group: dict, checked_at: datetime) -> None:
         group_id = group["group_id"]
-        await self._notifications.publish(
+        await self._notifications.publish_event(
             Notification(
                 dedup_key=f"group-removed:{group_id}:{int(checked_at.timestamp())}",
                 severity=Severity.WARNING,
