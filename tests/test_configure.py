@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import sqlite3
 from datetime import UTC, datetime
@@ -12,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from sealdice_sentinel.configure import (
     DiscoveredConnection,
+    _backup_and_write,
     _load_usage_summary,
     _read_secret,
     _render_page,
@@ -20,6 +22,29 @@ from sealdice_sentinel.configure import (
     discover_connections,
     run_web_ui,
 )
+
+
+def test_backup_and_write_preserves_file_metadata(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("before\n", encoding="utf-8")
+    os.chmod(target, 0o640)
+    original = target.stat()
+    chown_calls: list[tuple[Path, int, int]] = []
+
+    monkeypatch.setattr(
+        os,
+        "chown",
+        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+        raising=False,
+    )
+
+    backup = _backup_and_write(target, "after\n")
+
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert backup.read_text(encoding="utf-8") == "before\n"
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o640
+    assert chown_calls[0][1:] == (original.st_uid, original.st_gid)
 
 
 def test_usage_summary_reads_token_database(tmp_path) -> None:
@@ -260,6 +285,60 @@ def test_web_page_never_renders_access_token(tmp_path) -> None:
     assert 'value="123456789"' in page
     assert "豹骰监控台" in page
     assert 'class="sidebar"' in page
+
+
+def test_web_page_prefers_newly_discovered_milky_port_over_stale_config(tmp_path) -> None:
+    connection = DiscoveredConnection(
+        provider="yogurt",
+        connection_id="main",
+        config_path=tmp_path / "config.json",
+        base_url="http://127.0.0.1:33123",
+        access_token="token",
+        config_version=3,
+        document={},
+    )
+
+    page = _render_page(
+        "csrf-value",
+        "/srv/sealdice",
+        "/etc/sealdice-sentinel/config.yaml",
+        [connection],
+        settings={
+            "milky": {
+                "base_url": "http://127.0.0.1:33073",
+                "webhook_token": "configured-webhook-token",
+            }
+        },
+    )
+
+    assert 'name="milky_base_url" value="http://127.0.0.1:33123"' in page
+    assert "Sentinel 当前保存值：http://127.0.0.1:33073" in page
+
+
+def test_web_page_leaves_multi_connection_override_empty(tmp_path) -> None:
+    connections = [
+        DiscoveredConnection(
+            provider="yogurt",
+            connection_id=name,
+            config_path=tmp_path / name / "config.json",
+            base_url=f"http://127.0.0.1:{port}",
+            access_token="token",
+            config_version=3,
+            document={},
+        )
+        for name, port in (("first", 33073), ("second", 33074))
+    ]
+
+    page = _render_page(
+        "csrf-value",
+        "/srv/sealdice",
+        "/etc/sealdice-sentinel/config.yaml",
+        connections,
+        settings={"milky": {"base_url": "http://127.0.0.1:33073"}},
+    )
+
+    assert 'name="milky_base_url" value=""' in page
+    assert "留空将使用所选连接的自动识别地址" in page
 
 
 def test_web_ui_discovers_without_exposing_token(tmp_path) -> None:

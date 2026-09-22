@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sealdice_sentinel.models import Incident, MilkyEvent, NotificationChannel, ServiceName
 from sealdice_sentinel.services.event_processor import EventProcessor
@@ -52,6 +52,10 @@ def test_historical_reconciliation_event_does_not_recover_session() -> None:
 
 def test_friend_request_routes_to_owner_qq() -> None:
     asyncio.run(_run_owner_qq_scenario())
+
+
+def test_repeated_friend_request_from_same_account_is_not_suppressed() -> None:
+    asyncio.run(_run_repeated_friend_request_scenario())
 
 
 async def _run_bot_offline_deduplication_scenario() -> None:
@@ -108,15 +112,38 @@ async def _run_owner_qq_scenario() -> None:
         notifications,
         IncidentService(MemoryIncidentRepository(), notifications),
     )
+    occurred_at = datetime.now(UTC).replace(microsecond=0)
     event = MilkyEvent(
         event_type="friend_request",
         self_id=10001,
-        occurred_at=datetime.now(UTC),
+        occurred_at=occurred_at,
         data={"initiator_id": 20002, "initiator_uid": "uid-2", "comment": "hello"},
         raw={},
     )
 
     await processor.process(event)
-    notification = outbox.items["friend-request:uid-2"]
+    notification = outbox.items[f"friend-request:uid-2:{int(occurred_at.timestamp())}"]
     assert notification.channel is NotificationChannel.QQ
     assert notification.recipient == "123456789"
+
+
+async def _run_repeated_friend_request_scenario() -> None:
+    outbox = MemoryOutbox()
+    notifications = NotificationService(outbox, owner_qq=123456789)
+    processor = EventProcessor(
+        notifications,
+        IncidentService(MemoryIncidentRepository(), notifications),
+    )
+    first_time = datetime.now(UTC).replace(microsecond=0)
+    for occurred_at in (first_time, first_time + timedelta(hours=1)):
+        await processor.process(
+            MilkyEvent(
+                event_type="friend_request",
+                self_id=10001,
+                occurred_at=occurred_at,
+                data={"initiator_id": 20002, "initiator_uid": "uid-2"},
+                raw={},
+            )
+        )
+
+    assert len(outbox.items) == 2

@@ -19,8 +19,18 @@ class MilkyApiClient:
 
     async def get_friend_requests(self) -> list[dict[str, Any]]:
         normal, filtered = await self._call_both_friend_request_lists()
-        requests = [*normal.get("requests", []), *filtered.get("requests", [])]
-        return [request for request in requests if request.get("state") == "pending"]
+        return [
+            *(
+                {**request, "is_filtered": False}
+                for request in normal.get("requests", [])
+                if isinstance(request, dict)
+            ),
+            *(
+                {**request, "is_filtered": True}
+                for request in filtered.get("requests", [])
+                if isinstance(request, dict)
+            ),
+        ]
 
     async def _call_both_friend_request_lists(
         self,
@@ -38,6 +48,10 @@ class MilkyApiClient:
     async def get_groups(self) -> list[dict[str, Any]]:
         data = await self.call("get_group_list", {"no_cache": True})
         return list(data.get("groups", []))
+
+    async def get_friends(self) -> list[dict[str, Any]]:
+        data = await self.call("get_friend_list", {"no_cache": True})
+        return list(data.get("friends", []))
 
     async def send_private_message(self, user_id: int, text: str) -> None:
         await self.call(

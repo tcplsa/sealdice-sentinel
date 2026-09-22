@@ -51,13 +51,22 @@ class EventProcessor:
     async def _friend_request(self, event: MilkyEvent) -> None:
         initiator = event.data.get("initiator_id", "未知")
         uid = event.data.get("initiator_uid", "")
+        occurred_second = int(event.occurred_at.timestamp())
+        state = str(event.data.get("state") or "pending")
+        state_labels = {
+            "pending": "待处理",
+            "accepted": "已同意",
+            "rejected": "已拒绝",
+            "ignored": "已忽略",
+        }
         await self._notifications.publish_event(
             Notification(
-                dedup_key=f"friend-request:{uid or initiator}",
+                dedup_key=f"friend-request:{uid or initiator}:{occurred_second}",
                 severity=Severity.INFO,
                 subject="[提醒][公骰监控] 收到好友申请",
                 body=(
                     f"申请人 QQ：{initiator}\n"
+                    f"当前状态：{state_labels.get(state, state)}\n"
                     f"申请信息：{event.data.get('comment') or '无'}\n"
                     f"来源：{event.data.get('via') or '未知'}\n"
                     f"时间：{event.occurred_at.isoformat()}"

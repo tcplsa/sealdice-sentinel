@@ -68,7 +68,7 @@ async def run(config_path: Path) -> None:
     )
     await store.initialize()
     notifications = NotificationService(store, owner_qq=config.notifications.owner_qq)
-    incidents = IncidentService(store, notifications)
+    incidents = IncidentService(store, notifications, timezone=config.timezone)
     processor = EventProcessor(notifications, incidents)
     webhook = MilkyWebhookServer(
         host=config.milky.webhook_host,
@@ -88,6 +88,7 @@ async def run(config_path: Path) -> None:
     reconciliation = ReconciliationService(
         gateway=milky_gateway,
         events=store,
+        friends=store,
         groups=store,
         processor=processor,
         incidents=incidents,

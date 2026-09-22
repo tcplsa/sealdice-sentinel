@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 
 from ..models import HealthSample
 from ..ports import SealDiceProbe
@@ -25,6 +26,7 @@ class HealthMonitor:
         self._interval_seconds = interval_seconds
         self._failure_threshold = failure_threshold
         self._consecutive_failures = 0
+        self._first_failed_at = None
         self._logger = logging.getLogger(__name__)
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -43,6 +45,7 @@ class HealthMonitor:
         if sample.healthy:
             was_failing = self._consecutive_failures > 0
             self._consecutive_failures = 0
+            self._first_failed_at = None
             recovered = await self._incidents.report_healthy(
                 sample.service,
                 sample.checked_at,
@@ -56,6 +59,9 @@ class HealthMonitor:
             return
 
         self._consecutive_failures += 1
+        if self._first_failed_at is None:
+            self._first_failed_at = sample.checked_at
+        sample = replace(sample, first_failed_at=self._first_failed_at)
         self._logger.warning(
             "health probe failed (%d/%d): %s: %s",
             self._consecutive_failures,

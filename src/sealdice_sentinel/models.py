@@ -50,6 +50,7 @@ class HealthSample:
     checked_at: datetime
     latency_ms: int | None = None
     reason: str | None = None
+    first_failed_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -103,3 +104,4 @@ class Incident:
     source: str
     recovered_at: datetime | None = None
     recovery_source: str | None = None
+    first_failed_at: datetime | None = None

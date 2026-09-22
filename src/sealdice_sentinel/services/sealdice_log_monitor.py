@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections import deque
@@ -87,6 +88,7 @@ class SealDiceJournalMonitor:
                 ServiceName.SEALDICE_LINK,
                 occurred_at,
                 source=source,
+                evidence=line.strip()[:500],
             )
             return
 
@@ -99,6 +101,7 @@ class SealDiceJournalMonitor:
             healthy=False,
             checked_at=occurred_at,
             reason=line.strip()[:500],
+            first_failed_at=self._failures[0],
         )
         if signal is LogSignal.DEFINITIVE_FAILURE or len(self._failures) >= self._failure_threshold:
             await self._incidents.report_down(sample, source=source)
@@ -117,7 +120,7 @@ class SealDiceJournalMonitor:
                     "--lines",
                     "0",
                     "--output",
-                    "cat",
+                    "json",
                     "--no-pager",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
@@ -160,4 +163,13 @@ class SealDiceJournalMonitor:
             raw_line = read_task.result()
             if not raw_line:
                 return
-            await self.process_line(raw_line.decode("utf-8", errors="replace"))
+            try:
+                entry = json.loads(raw_line)
+                occurred_at = datetime.fromtimestamp(
+                    int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC
+                )
+                message = entry["MESSAGE"]
+                if isinstance(message, str):
+                    await self.process_line(message, occurred_at)
+            except (ValueError, KeyError, TypeError, OverflowError):
+                self._logger.warning("Ignored journal record without a valid timestamp/message")

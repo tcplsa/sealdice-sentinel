@@ -364,7 +364,7 @@ def _backup_and_write(path: Path, content: str) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
     backup = path.with_name(f"{path.name}.bak-{timestamp}")
     shutil.copy2(path, backup)
-    original_mode = path.stat().st_mode
+    original_stat = path.stat()
     with tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -376,8 +376,17 @@ def _backup_and_write(path: Path, content: str) -> Path:
         temporary.flush()
         os.fsync(temporary.fileno())
         temporary_path = Path(temporary.name)
-    os.chmod(temporary_path, original_mode)
-    temporary_path.replace(path)
+    try:
+        # The configuration UI is commonly launched as root while the monitor
+        # runs as the dedicated sealdice-sentinel user. Replacing the file with
+        # a root-created temporary file must not silently change its ownership.
+        if hasattr(os, "chown"):
+            os.chown(temporary_path, original_stat.st_uid, original_stat.st_gid)
+        os.chmod(temporary_path, original_stat.st_mode)
+        temporary_path.replace(path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
     return backup
 
 
@@ -656,6 +665,20 @@ def _render_page(
             )
             security = str(smtp.get("security", "tls"))
             update_mode = str(updates.get("mode", "notify"))
+            configured_base_url = str(milky.get("base_url", "")).strip()
+            # A scanned connection is authoritative unless the operator explicitly
+            # enters an override.  Previously this field was populated from the
+            # existing Sentinel config, so saving after a Yogurt port change wrote
+            # the stale port back over the freshly discovered value.
+            detected_base_url = connections[0].base_url if len(connections) == 1 else ""
+            base_url_value = detected_base_url
+            base_url_hint = (
+                "已按 Yogurt 配置自动识别；仅在需要手工覆盖时修改。"
+                if detected_base_url
+                else "发现多个连接时请先选择连接；留空将使用所选连接的自动识别地址。"
+            )
+            if configured_base_url and configured_base_url != detected_base_url:
+                base_url_hint += f" Sentinel 当前保存值：{configured_base_url}"
             connection_html = f"""
             <section class="card" id="connections">
               <div class="section-heading"><div><h2>QQ 连接设置</h2>
@@ -673,7 +696,9 @@ def _render_page(
                       <p class="muted">API 鉴权、事件回调及连通性配置</p></div></div>
                     <div class="field-grid">
                       <div class="span-2"><label>Milky API 地址</label>
-                        <input name="milky_base_url" value="{_escape(milky.get('base_url', connections[0].base_url))}"></div>
+                        <input name="milky_base_url" value="{_escape(base_url_value)}"
+                          placeholder="留空将使用所选连接的自动识别地址">
+                        <span class="muted">{_escape(base_url_hint)}</span></div>
                       <div class="span-2"><label>Milky Access Token</label>
                         <input type="password" name="milky_access_token" autocomplete="new-password"
                           placeholder="{'已设置；留空保持不变' if connections[0].access_token else '可设置新的 API Token'}"></div>

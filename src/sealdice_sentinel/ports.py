@@ -9,6 +9,8 @@ from .models import HealthSample, Incident, MilkyEvent, Notification, ReleaseInf
 class MilkyGateway(Protocol):
     async def get_friend_requests(self) -> list[dict[str, Any]]: ...
 
+    async def get_friends(self) -> list[dict[str, Any]]: ...
+
     async def get_groups(self) -> list[dict[str, Any]]: ...
 
 
@@ -29,6 +31,24 @@ class GroupSnapshotRepository(Protocol):
         checked_at,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Persist a group snapshot and return added and removed groups."""
+        ...
+
+
+class FriendSnapshotRepository(Protocol):
+    async def reconcile_friend_requests(
+        self,
+        requests: list[dict[str, Any]],
+        checked_at,
+    ) -> list[dict[str, Any]]:
+        """Persist request history and return requests first seen after baseline."""
+        ...
+
+    async def reconcile_friends(
+        self,
+        friends: list[dict[str, Any]],
+        checked_at,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Persist a friend snapshot and return added and removed friends."""
         ...
 
 

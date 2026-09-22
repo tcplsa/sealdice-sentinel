@@ -103,6 +103,21 @@ class SQLiteStore:
                     last_seen_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS current_friends (
+                    user_id INTEGER PRIMARY KEY,
+                    nickname TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS seen_friend_requests (
+                    request_key TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS monitor_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -145,6 +160,9 @@ class SQLiteStore:
                 )
             if "recipient" not in columns:
                 db.execute("ALTER TABLE notification_outbox ADD COLUMN recipient TEXT")
+            incident_columns = {row[1] for row in db.execute("PRAGMA table_info(incidents)")}
+            if "first_failed_at" not in incident_columns:
+                db.execute("ALTER TABLE incidents ADD COLUMN first_failed_at TEXT")
 
     async def record(self, usage: TokenUsage) -> bool:
         return await asyncio.to_thread(self._record_usage_sync, usage)
@@ -424,6 +442,139 @@ class SQLiteStore:
         removed = [existing[group_id] for group_id in sorted(removed_ids)]
         return added, removed
 
+    async def reconcile_friend_requests(
+        self,
+        requests: list[dict],
+        checked_at: datetime,
+    ) -> list[dict]:
+        return await asyncio.to_thread(
+            self._reconcile_friend_requests_sync,
+            requests,
+            checked_at,
+        )
+
+    def _reconcile_friend_requests_sync(
+        self,
+        requests: list[dict],
+        checked_at: datetime,
+    ) -> list[dict]:
+        timestamp = checked_at.isoformat()
+        normalized: dict[str, dict] = {}
+        for request in requests:
+            identity = {
+                "time": int(request["time"]),
+                "initiator_uid": str(request.get("initiator_uid") or ""),
+                "initiator_id": int(request["initiator_id"]),
+                "target_user_id": int(request["target_user_id"]),
+                "is_filtered": bool(request.get("is_filtered", False)),
+            }
+            request_key = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            normalized[request_key] = request
+
+        with self._connect() as db:
+            initialized = db.execute(
+                "SELECT value FROM monitor_metadata "
+                "WHERE key = 'friend_requests_initialized'"
+            ).fetchone()
+            existing_keys = {
+                str(row[0]) for row in db.execute("SELECT request_key FROM seen_friend_requests")
+            }
+            new_keys = normalized.keys() - existing_keys if initialized else set()
+
+            for request_key, request in normalized.items():
+                payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
+                db.execute(
+                    """
+                    INSERT INTO seen_friend_requests(
+                        request_key, payload_json, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(request_key) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (request_key, payload, timestamp, timestamp),
+                )
+            db.execute(
+                """
+                INSERT INTO monitor_metadata(key, value)
+                VALUES ('friend_requests_initialized', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (timestamp,),
+            )
+
+        return [normalized[key] for key in sorted(new_keys)]
+
+    async def reconcile_friends(
+        self,
+        friends: list[dict],
+        checked_at: datetime,
+    ) -> tuple[list[dict], list[dict]]:
+        return await asyncio.to_thread(self._reconcile_friends_sync, friends, checked_at)
+
+    def _reconcile_friends_sync(
+        self,
+        friends: list[dict],
+        checked_at: datetime,
+    ) -> tuple[list[dict], list[dict]]:
+        normalized = {
+            int(friend["user_id"]): {
+                **friend,
+                "user_id": int(friend["user_id"]),
+                "nickname": str(friend.get("nickname") or friend.get("name") or "未知"),
+            }
+            for friend in friends
+        }
+        timestamp = checked_at.isoformat()
+        with self._connect() as db:
+            db.row_factory = sqlite3.Row
+            initialized = db.execute(
+                "SELECT value FROM monitor_metadata WHERE key = 'friends_initialized'"
+            ).fetchone()
+            existing_rows = db.execute(
+                "SELECT user_id, payload_json FROM current_friends"
+            ).fetchall()
+            existing = {
+                int(row["user_id"]): json.loads(row["payload_json"])
+                for row in existing_rows
+            }
+            added_ids = normalized.keys() - existing.keys() if initialized else set()
+            removed_ids = existing.keys() - normalized.keys() if initialized else set()
+
+            for user_id, friend in normalized.items():
+                payload = json.dumps(friend, ensure_ascii=False, sort_keys=True)
+                db.execute(
+                    """
+                    INSERT INTO current_friends(
+                        user_id, nickname, payload_json, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        nickname = excluded.nickname,
+                        payload_json = excluded.payload_json,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (user_id, friend["nickname"], payload, timestamp, timestamp),
+                )
+            if removed_ids:
+                placeholders = ",".join("?" for _ in removed_ids)
+                db.execute(
+                    f"DELETE FROM current_friends WHERE user_id IN ({placeholders})",
+                    tuple(removed_ids),
+                )
+            db.execute(
+                """
+                INSERT INTO monitor_metadata(key, value) VALUES ('friends_initialized', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (timestamp,),
+            )
+
+        added = [normalized[user_id] for user_id in sorted(added_ids)]
+        removed = [existing[user_id] for user_id in sorted(removed_ids)]
+        return added, removed
+
     async def record_health_sample(self, sample: HealthSample) -> None:
         await asyncio.to_thread(self._record_health_sample_sync, sample)
 
@@ -457,10 +608,11 @@ class SQLiteStore:
                 return None
             cursor = db.execute(
                 """
-                INSERT INTO incidents(service, started_at, reason, source)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO incidents(service, started_at, reason, source, first_failed_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (sample.service.value, sample.checked_at.isoformat(), reason, source),
+                (sample.service.value, sample.checked_at.isoformat(), reason, source,
+                 (sample.first_failed_at or sample.checked_at).isoformat()),
             )
             return Incident(
                 incident_id=int(cursor.lastrowid),
@@ -468,6 +620,7 @@ class SQLiteStore:
                 started_at=sample.checked_at,
                 reason=reason,
                 source=source,
+                first_failed_at=sample.first_failed_at or sample.checked_at,
             )
 
     async def close_incident(
@@ -493,7 +646,7 @@ class SQLiteStore:
             db.row_factory = sqlite3.Row
             row = db.execute(
                 """
-                SELECT id, service, started_at, reason, source
+                SELECT id, service, started_at, reason, source, first_failed_at
                 FROM incidents
                 WHERE service = ? AND recovered_at IS NULL
                 """,
@@ -517,4 +670,6 @@ class SQLiteStore:
                 source=row["source"],
                 recovered_at=recovered_at,
                 recovery_source=recovery_source,
+                first_failed_at=(datetime.fromisoformat(row["first_failed_at"])
+                                 if row["first_failed_at"] else None),
             )
