@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 import yaml
 from aiohttp import web
 
+from . import __version__
+
 
 @dataclass(slots=True)
 class DiscoveredConnection:
@@ -826,7 +828,7 @@ def _render_page(
 <title>豹骰监控台 · 配置中心</title><style>{_PAGE_STYLE}</style></head>
 <body>
 <header class="topbar"><div class="brand">豹骰监控台<small>SealDice Sentinel</small></div>
-  <div class="top-meta"><span>独立监控服务</span><span class="version">v0.4.0</span></div></header>
+  <div class="top-meta"><span>独立监控服务</span><span class="version">v{__version__}</span></div></header>
 <div class="app-shell">
 <aside class="sidebar" aria-label="配置导航">
   <div class="nav-title">监控台</div>
