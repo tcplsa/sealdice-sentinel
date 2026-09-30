@@ -88,6 +88,60 @@ class MilkySessionProbe(_MilkyProbe):
 MilkyHealthProbe = MilkyProcessProbe
 
 
+class OfficialQQStateProbe:
+    """Check fresh SealDice runtime state, not persisted YAML or message delivery."""
+
+    def __init__(
+        self, base_url: str, access_token: str, endpoint_id: str, expected_user_id: str,
+        timeout_seconds: int = 10,
+    ) -> None:
+        self._url = f"{base_url.rstrip('/')}/sd-api/im_connections/list"
+        self._headers = {"token": access_token}
+        self._endpoint_id = endpoint_id
+        self._expected_user_id = expected_user_id
+        self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+    def _check_endpoint(self, body: object) -> tuple[bool, str | None]:
+        if not isinstance(body, list) or any(not isinstance(item, dict) for item in body):
+            return False, "Official QQ: invalid management response"
+        matches = [item for item in body if item.get("id") == self._endpoint_id]
+        if len(matches) != 1:
+            return False, "Official QQ: endpoint missing or duplicated"
+        endpoint = matches[0]
+        if endpoint.get("protocolType") != "official" or endpoint.get("platform") != "QQ":
+            return False, "Official QQ: endpoint protocol mismatch"
+        if endpoint.get("userId") != self._expected_user_id:
+            return False, "Official QQ: account identity mismatch"
+        if endpoint.get("enable") is not True:
+            return False, "Official QQ: endpoint disabled"
+        state = endpoint.get("state")
+        if type(state) is not int or state != 1:
+            return False, "Official QQ: SealDice runtime state is not connected"
+        return True, None
+
+    async def health(self) -> HealthSample:
+        started = time.perf_counter()
+        checked_at = datetime.now(UTC)
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=self._timeout) as session,
+                session.get(self._url, headers=self._headers, allow_redirects=False) as response,
+            ):
+                if response.status != 200:
+                    healthy = False
+                    reason = f"Official QQ management API: HTTP {response.status}"
+                else:
+                    healthy, reason = self._check_endpoint(await response.json(content_type=None))
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            healthy = False
+            # Management responses and credentials must not enter logs or incident evidence.
+            reason = f"Official QQ management API: {type(exc).__name__}"
+        return HealthSample(
+            service=ServiceName.QQ, healthy=healthy, checked_at=checked_at,
+            latency_ms=int((time.perf_counter() - started) * 1000), reason=reason,
+        )
+
+
 class SealDiceHttpProbe:
     def __init__(self, url: str, timeout_seconds: int = 10) -> None:
         self._url = url

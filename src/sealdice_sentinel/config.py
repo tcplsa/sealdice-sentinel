@@ -47,11 +47,24 @@ class MonitoringConnection:
 
 
 @dataclass(slots=True, frozen=True)
+class OfficialQQConnection:
+    id: str
+    name: str
+    base_url: str
+    access_token: str = field(repr=False)
+    endpoint_id: str
+    expected_user_id: str
+    health_interval_seconds: int = 30
+    failure_threshold: int = 3
+
+
+@dataclass(slots=True, frozen=True)
 class MonitoringTarget:
     id: str
     name: str
     sealdice: SealDiceConfig
     milky_connections: tuple[MonitoringConnection, ...]
+    official_connections: tuple[OfficialQQConnection, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -137,6 +150,7 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
     targets = []
     seen_ids = set()
     seen_urls = set()
+    seen_official_endpoints = set()
     for entry in raw_targets:
         target_id = _monitor_id(entry.get("id"))
         if target_id in seen_ids:
@@ -196,9 +210,46 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
                 health_interval_seconds=interval, failure_threshold=threshold,
                 probe_friend_requests=auxiliary,
             ))
-        if not core.health_url and not core.systemd_unit and not connections:
+        raw_official = entry.get("official_connections", [])
+        if not isinstance(raw_official, list):
+            raise TypeError("official_connections must be a list")
+        official_connections = []
+        for connection in raw_official:
+            if not isinstance(connection, dict):
+                raise TypeError("each official connection must be an object")
+            connection_id = _monitor_id(connection.get("id"))
+            if connection_id in connection_ids:
+                raise ValueError(f"duplicate connection in {target_id}: {connection_id}")
+            connection_ids.add(connection_id)
+            base_url = str(connection.get("base_url", "")).rstrip("/")
+            _check_http_url(base_url)
+            parsed = urlsplit(base_url)
+            if parsed.hostname not in {"127.0.0.1", "::1", "localhost"} or parsed.path:
+                raise ValueError("official management URLs must be loopback origins without a path")
+            required = {}
+            for key in ("access_token", "endpoint_id", "expected_user_id"):
+                value = connection.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"official connections require a nonempty {key}")
+                required[key] = value.strip()
+            identity = (base_url, required["endpoint_id"])
+            if identity in seen_official_endpoints:
+                raise ValueError("an official endpoint may only be monitored once")
+            seen_official_endpoints.add(identity)
+            interval = connection.get("health_interval_seconds", core.health_interval_seconds)
+            threshold = connection.get("failure_threshold", core.failure_threshold)
+            if any(type(value) is not int or value < 1 for value in (interval, threshold)):
+                raise ValueError("connection intervals and failure thresholds must be positive integers")
+            official_connections.append(OfficialQQConnection(
+                id=connection_id, name=str(connection.get("name", connection_id)),
+                base_url=base_url, **required,
+                health_interval_seconds=interval, failure_threshold=threshold,
+            ))
+        if not core.health_url and not core.systemd_unit and not connections and not official_connections:
             raise ValueError(f"monitoring target has nothing to check: {target_id}")
-        targets.append(MonitoringTarget(target_id, name, core, tuple(connections)))
+        targets.append(MonitoringTarget(
+            target_id, name, core, tuple(connections), tuple(official_connections),
+        ))
     return tuple(targets)
 
 

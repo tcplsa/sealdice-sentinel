@@ -617,6 +617,10 @@ def _render_monitoring_targets(settings: dict[str, Any]) -> str:
             for service, description in (("yogurt", "协议端"), ("qq", "QQ 会话")):
                 checks.append((scope, target.name, service, f"{connection.name} · {description}",
                                connection.health_interval_seconds))
+        for connection in target.official_connections:
+            scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
+            checks.append((scope, target.name, "qq", f"{connection.name} · 官方连接状态",
+                           connection.health_interval_seconds))
     latest = {}
     database = Path(str(settings.get("app", {}).get("database_path", "")))
     if database.is_file():
@@ -657,10 +661,17 @@ def _render_monitoring_targets(settings: dict[str, Any]) -> str:
                 state = "采样时间无效"
         rows.append(f"<tr><td>{_escape(name)}</td><td>{_escape(description)}</td>"
                     f"<td>{_escape(state)}</td><td>{_escape(checked)}</td></tr>")
+    official_count = sum(len(target.official_connections) for target in targets)
+    limitations = (
+        '<p class="muted">官方 QQ 检查读取海豹实时连接状态、启用状态及账号身份；'
+        '不能验证群消息实际收发，也不能保证发现连接状态未更新的故障。</p>'
+        if official_count else ""
+    )
     return ('<section class="card" id="monitoring"><h2>监控范围</h2>'
             f'<p class="muted">共 {len(targets)} 个海豹、'
-            f'{sum(len(target.milky_connections) for target in targets)} 个 QQ 连接。'
+            f'{sum(len(target.milky_connections) for target in targets) + official_count} 个 QQ 连接。'
             '可用性和掉线告警按实例区分；好友、群事件与用量入口使用当前主连接。</p>'
+            f'{limitations}'
             '<div style="overflow-x:auto"><table class="monitoring-table">'
             '<thead><tr><th>实例</th><th>检查项</th><th>状态</th><th>最近检查</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div></section>')

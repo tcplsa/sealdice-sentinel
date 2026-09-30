@@ -52,6 +52,16 @@ sealdice:
 #         name: QQ 账号四
 #         base_url: http://127.0.0.1:43613
 #         access_token: replace-with-existing-token
+#     official_connections:
+#       - id: official
+#         name: QQ 官方账号五
+#         base_url: http://127.0.0.1:3214
+#         access_token: replace-with-existing-sealdice-webui-token
+#         endpoint_id: replace-with-official-endpoint-uuid
+#         expected_user_id: OpenQQ:123456789
+#         health_interval_seconds: 30
+#         failure_threshold: 3
+# Official QQ checks read live SealDice state; they do not verify message delivery.
 
 smtp:
   host: smtp.example.com

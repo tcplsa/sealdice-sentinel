@@ -7,7 +7,12 @@ import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from .adapters.health import MilkyProcessProbe, MilkySessionProbe, SealDiceHttpProbe
+from .adapters.health import (
+    MilkyProcessProbe,
+    MilkySessionProbe,
+    OfficialQQStateProbe,
+    SealDiceHttpProbe,
+)
 from .adapters.milky import MilkyApiClient, MilkyQqNotifier
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
@@ -96,6 +101,22 @@ def build_monitors(
                     failure_threshold=connection.failure_threshold,
                     initial_delay_seconds=min(len(monitors) * 2, 20),
                 ))
+        for connection in target.official_connections:
+            scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
+            official_incidents = IncidentService(
+                store, notifications, config.timezone, scope,
+                f"{target.name} / {connection.name}（官方连接状态）",
+            )
+            monitors.append(HealthMonitor(
+                name=f"{scope}:official-state",
+                probe=OfficialQQStateProbe(
+                    connection.base_url, connection.access_token,
+                    connection.endpoint_id, connection.expected_user_id,
+                ),
+                incidents=official_incidents, interval_seconds=connection.health_interval_seconds,
+                failure_threshold=connection.failure_threshold,
+                initial_delay_seconds=min(len(monitors) * 2, 20),
+            ))
     return monitors, journals
 
 

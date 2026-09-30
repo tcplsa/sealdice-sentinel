@@ -489,13 +489,14 @@ NO_PROXY=127.0.0.1,localhost
 
 0.5.0 支持在原配置中添加 `monitoring_targets`。默认实例 ID 为 `default`，沿用顶层
 `sealdice` 和 `milky` 设置；可以只填写名称。其他实例分别填写 WebUI、systemd 单元及
-`milky_connections`，完整三实例、四连接示例见 `config.example.yaml` 中的注释。
+`milky_connections`。0.5.1 增加 `official_connections`，完整三实例、五账号示例见
+`config.example.yaml` 中的注释，其中四个是 Milky，一个是 QQ 官方账号。
 
 每个连接用稳定 ID 标识，`main` 使用所属海豹的实例 ID，其他连接使用 `实例ID/连接ID`。
 实例 ID 和连接 ID 只接受字母、数字、点、下划线和短横线；重命名显示名称不会改变历史记录，
 修改 ID 则视为新增监控对象。一个 Milky 接口只应配置一次。
 
-每个实例独立检查 SealDice WebUI、Milky 实现和 QQ 实际会话，并分别监听其通信日志；
+每个实例独立检查 SealDice WebUI、Milky 实现和 Milky QQ 实际会话，并分别监听其通信日志；
 多个对象可同时故障，各自恢复只结束自己的故障周期。告警主题和正文会注明实例名称与 ID。
 所有检查共享一个 Python 进程、数据库和通知队列，并错开启动检查，默认仍每 30 秒采样、
 连续三次失败后确认故障。配置页的“监控范围”显示检查对象与采样是否过期。
@@ -504,6 +505,21 @@ NO_PROXY=127.0.0.1,localhost
 配置中设置 `probe_friend_requests: false`。这样仍检查登录信息和绕过缓存的群列表；
 默认保留这项辅助探测，不会把超时或其他 API 故障自动降级为健康。
 主连接需要调整这项设置时，在顶层 `milky` 中配置同名字段。
+
+QQ 官方账号没有 Milky 接口，需在所属实例的 `official_connections` 中单独配置：
+`base_url` 为海豹 WebUI 的本机地址（仅接受 `127.0.0.1`、`::1` 或 `localhost`，不带路径），
+`access_token` 是已有的海豹 WebUI 登录令牌，`endpoint_id` 是该官方连接的 UUID，
+`expected_user_id` 是预期官方账号身份，例如 `OpenQQ:123456789`。连接 ID 不能与同实例
+的 Milky 连接重复。多个官方账号可共用管理接口，但同一个端点只能监控一次。
+
+检查使用只读 `GET /sd-api/im_connections/list`，每次读取海豹内存中的当前状态，核对端点、
+协议、账号身份、启用状态和 `state == 1`，不采用 `serve.yaml` 中保存的旧在线状态。
+接口不可达、认证失败、端点被删除、禁用、账号改变或连接状态异常都会进入失败阈值流程，
+不会重启海豹或重新登录。告警明确注明“官方连接状态”。
+这种检查依赖海豹报告的状态，不能证明 QQ 网关心跳正常、群消息实际收发成功，
+也不能保证发现连接状态未及时更新的故障；它与 Milky 的实时 API 检查覆盖范围不同。
+管理令牌仅发送到本机请求头，不跟随重定向，也不写入告警或配置页。
+保持配置文件仅 root 与 Sentinel 服务用户可读；撤销 WebUI 令牌后需同步更新此处令牌。
 
 本次多实例功能覆盖可用性和掉线告警。好友/群事件、列表补偿查询、QQ 通知发送端与
 Token 用量入口继续使用现有主连接，新增实例不会自动配置新的 WebHook。
