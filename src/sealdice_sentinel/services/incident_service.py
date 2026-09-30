@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -9,7 +10,7 @@ from .notification_service import NotificationService
 
 SERVICE_LABELS = {
     ServiceName.QQ: "QQ 会话",
-    ServiceName.YOGURT: "Yogurt",
+    ServiceName.YOGURT: "Milky 协议端",
     ServiceName.SEALDICE: "SealDice",
     ServiceName.SEALDICE_LINK: "SealDice-Milky 通信链路",
     ServiceName.SMTP: "SMTP",
@@ -37,23 +38,37 @@ class IncidentService:
         repository: IncidentRepository,
         notifications: NotificationService,
         timezone: str = "UTC",
+        instance_id: str = "default",
+        instance_name: str = "",
     ) -> None:
         self._repository = repository
         self._notifications = notifications
         self._timezone = ZoneInfo(timezone)
+        self._instance_id = instance_id
+        self._instance_name = instance_name
+
+    def _identity(self) -> str:
+        if not self._instance_name:
+            return ""
+        return f"监控实例：{self._instance_name}（{self._instance_id}）\n"
+
+    def _label(self, service: ServiceName) -> str:
+        label = SERVICE_LABELS[service]
+        return f"{self._instance_name} · {label}" if self._instance_name else label
 
     def _time(self, value: datetime) -> str:
         return value.astimezone(self._timezone).isoformat(timespec="seconds")
 
     async def record_sample(self, sample: HealthSample) -> None:
-        await self._repository.record_health_sample(sample)
+        await self._repository.record_health_sample(replace(sample, instance_id=self._instance_id))
 
     async def report_down(self, sample: HealthSample, source: str) -> bool:
+        sample = replace(sample, instance_id=self._instance_id)
         await self._repository.record_health_sample(sample)
         incident = await self._repository.open_incident(sample, source)
         if incident is None:
             return False
-        label = SERVICE_LABELS[incident.service]
+        label = self._label(incident.service)
         await self._notifications.publish(
             Notification(
                 dedup_key=f"incident-open:{incident.incident_id}",
@@ -61,6 +76,7 @@ class IncidentService:
                 subject=f"[严重][SealDice Sentinel] {label}异常",
                 body=(
                     f"故障编号：{incident.incident_id}\n"
+                    f"{self._identity()}"
                     f"故障对象：{label}\n"
                     f"故障类型：{failure_kind(incident.service, incident.source, incident.reason)}\n"
                     f"首次异常观测：{self._time(incident.first_failed_at or incident.started_at)}\n"
@@ -91,12 +107,15 @@ class IncidentService:
                     healthy=True,
                     checked_at=checked_at,
                     latency_ms=latency_ms,
+                    instance_id=self._instance_id,
                 )
             )
-        incident = await self._repository.close_incident(service.value, checked_at, source)
+        incident = await self._repository.close_incident(
+            service.value, checked_at, source, instance_id=self._instance_id
+        )
         if incident is None:
             return False
-        label = SERVICE_LABELS[incident.service]
+        label = self._label(incident.service)
         first_failed = incident.first_failed_at or incident.started_at
         duration = max(0, int((checked_at - first_failed).total_seconds()))
         recovery_evidence = evidence or (
@@ -111,6 +130,7 @@ class IncidentService:
                 subject=f"[恢复][SealDice Sentinel] {label}已恢复",
                 body=(
                     f"故障编号：{incident.incident_id}\n"
+                    f"{self._identity()}"
                     f"恢复对象：{label}\n"
                     f"故障类型：{failure_kind(incident.service, incident.source, incident.reason)}\n"
                     f"首次异常观测：{self._time(first_failed)}\n"

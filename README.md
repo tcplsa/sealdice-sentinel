@@ -32,6 +32,7 @@
 - SMTP TLS/STARTTLS 发送与失败退避重试。
 - Yogurt 进程、QQ 实际会话（绕过群缓存）与 SealDice Web 健康探测。
 - SealDice systemd 日志中的 Milky 断连、发送失败与恢复监控。
+- 一个进程监控多个海豹及多个 Milky QQ 连接，按实例区分故障和恢复，排除聊天内容中的掉线/恢复关键词。
 - 带密码保护的“豹骰监控台”，可管理 Milky/WebHook、骰主 QQ、邮件、更新策略与密钥，并发现 Yogurt v1-v3。
 - 连续失败阈值、故障周期和恢复通知。
 - 好友申请定时补偿查询，覆盖 WebHook 中断窗口。
@@ -60,6 +61,6 @@ sealdice-sentinel/
 1. 在 Ubuntu 测试实例完成 Milky、SealDice、SMTP 和故障恢复演练。
 2. 扩展配置 WebUI，增加连接测试和运行状态页。
 3. 为 NapCat、Lagrange 等登录方式增加配置发现适配器。
-4. 增加 systemd 多实例部署，支持一台服务器监控多个骰子。
+4. 扩展多个账号的业务事件入口与好友/群补偿查询；当前多实例覆盖可用性及掉线告警。
 5. 在豹骰监控台增加 Token 用量看板、费用估算和阈值通知。
 6. 评估移动端消息、登录二维码和 SealDice WebUI 的功能复用方案。

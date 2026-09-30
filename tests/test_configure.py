@@ -16,6 +16,7 @@ from sealdice_sentinel.configure import (
     _backup_and_write,
     _load_usage_summary,
     _read_secret,
+    _render_monitoring_targets,
     _render_page,
     apply_configuration,
     create_web_app,
@@ -101,6 +102,31 @@ def test_usage_summary_reads_token_database(tmp_path) -> None:
     assert summary["today_requests"] == "1"
     assert summary["today_total"] == "120"
     assert summary["month_reasoning"] == "5"
+
+
+def test_monitoring_overview_shows_scoped_health_without_tokens(tmp_path):
+    from sealdice_sentinel.adapters.sqlite import SQLiteStore
+    from sealdice_sentinel.models import HealthSample, ServiceName
+
+    database = tmp_path / "monitor.db"
+    async def setup():
+        store = SQLiteStore(database)
+        await store.initialize()
+        for scope, healthy in (("default", True), ("dice2", False)):
+            await store.record_health_sample(HealthSample(
+                ServiceName.QQ, healthy, datetime.now(UTC), instance_id=scope,
+            ))
+    asyncio.run(setup())
+    settings = yaml.safe_load(Path("config.example.yaml").read_text(encoding="utf-8"))
+    settings["app"]["database_path"] = str(database)
+    settings["monitoring_targets"] = [{"id": "dice2", "name": "二号海豹", "milky_connections": [
+        {"id": "main", "base_url": "http://127.0.0.1:4321", "access_token": "must-stay-private"},
+    ]}]
+    page = _render_monitoring_targets(settings)
+    assert "二号海豹" in page
+    assert "正常" in page and "异常" in page
+    assert "must-stay-private" not in page
+    assert "2 个海豹" in page
 
 
 def _write_yogurt_v3(root: Path, connection_id: str, port: int = 33073) -> Path:

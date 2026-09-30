@@ -45,14 +45,44 @@ _RECOVERY_PATTERNS = tuple(
     )
 )
 
+_CONSOLE_PREFIX = re.compile(
+    r"^\S+\s+(?:DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\s+\S+\s+\S+\.go:\d+\s+",
+    re.IGNORECASE,
+)
+_CHAT_PREFIX = re.compile(
+    r"^(?:收到(?:群|个人|私聊|私信|好友|用户)|"
+    r"(?:发给|发送给|发往|发送到|回复|向)(?:群|个人|私聊|私信|好友|用户)|"
+    r"发送(?:群|私聊|私信|好友)?消息)",
+)
+
+
+def _system_message(line: str) -> str:
+    """Exclude chat envelopes before inspecting text for connection signals."""
+    message = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+    if message.startswith("{"):
+        try:
+            document = json.loads(message)
+        except (ValueError, TypeError):
+            return ""
+        if not isinstance(document, dict):
+            return ""
+        message = document.get("msg", document.get("message", ""))
+        if not isinstance(message, str):
+            return ""
+    message = _CONSOLE_PREFIX.sub("", message).lstrip()
+    # Names and message bodies are user-controlled. Neither failure nor recovery
+    # keywords inside a received/sent message provide evidence of connection state.
+    return "" if _CHAT_PREFIX.match(message) else message
+
 
 def classify_log_line(line: str) -> LogSignal:
     """Classify only conservative, connection-related SealDice log messages."""
-    if any(pattern.search(line) for pattern in _DEFINITIVE_FAILURE_PATTERNS):
+    message = _system_message(line)
+    if any(pattern.search(message) for pattern in _DEFINITIVE_FAILURE_PATTERNS):
         return LogSignal.DEFINITIVE_FAILURE
-    if any(pattern.search(line) for pattern in _RECOVERY_PATTERNS):
+    if any(pattern.search(message) for pattern in _RECOVERY_PATTERNS):
         return LogSignal.RECOVERY
-    if any(pattern.search(line) for pattern in _FAILURE_PATTERNS):
+    if any(pattern.search(message) for pattern in _FAILURE_PATTERNS):
         return LogSignal.FAILURE
     return LogSignal.IGNORE
 

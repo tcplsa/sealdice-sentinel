@@ -72,6 +72,7 @@ class IncidentRepository(Protocol):
         service: str,
         recovered_at,
         recovery_source: str,
+        instance_id: str = "default",
     ) -> Incident | None:
         """Close and return an open incident, or None when there is none."""
         ...

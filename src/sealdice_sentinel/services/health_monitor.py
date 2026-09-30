@@ -17,6 +17,7 @@ class HealthMonitor:
         incidents: IncidentService,
         interval_seconds: int,
         failure_threshold: int,
+        initial_delay_seconds: float = 0,
     ) -> None:
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be at least 1")
@@ -25,11 +26,17 @@ class HealthMonitor:
         self._incidents = incidents
         self._interval_seconds = interval_seconds
         self._failure_threshold = failure_threshold
+        self._initial_delay = initial_delay_seconds
         self._consecutive_failures = 0
         self._first_failed_at = None
         self._logger = logging.getLogger(__name__)
 
     async def run(self, stop: asyncio.Event) -> None:
+        if self._initial_delay:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self._initial_delay)
+            except TimeoutError:
+                pass
         while not stop.is_set():
             try:
                 sample = await self._probe.health()

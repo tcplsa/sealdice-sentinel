@@ -12,7 +12,7 @@ from .adapters.milky import MilkyApiClient, MilkyQqNotifier
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
 from .adapters.webhook import MilkyWebhookServer
-from .config import load_config
+from .config import AppConfig, load_config
 from .services.event_processor import EventProcessor
 from .services.health_monitor import HealthMonitor
 from .services.incident_service import IncidentService
@@ -48,6 +48,57 @@ async def supervise(
             pass
 
 
+def build_monitors(
+    config: AppConfig,
+    store: SQLiteStore,
+    notifications: NotificationService,
+    primary_incidents: IncidentService,
+) -> tuple[list[HealthMonitor], list[tuple[str, SealDiceJournalMonitor]]]:
+    monitors = []
+    journals = []
+    # Stagger live requests across targets instead of starting them in one burst.
+    for target in config.monitoring_targets:
+        incidents = primary_incidents if target.id == "default" else IncidentService(
+            store, notifications, config.timezone, target.id, target.name
+        )
+        core = target.sealdice
+        if core.health_url:
+            monitors.append(HealthMonitor(
+                name=f"{target.id}:sealdice-http", probe=SealDiceHttpProbe(core.health_url),
+                incidents=incidents, interval_seconds=core.health_interval_seconds,
+                failure_threshold=core.failure_threshold,
+                initial_delay_seconds=min(len(monitors) * 2, 20),
+            ))
+        if core.journal_monitor_enabled and core.systemd_unit:
+            journals.append((target.id, SealDiceJournalMonitor(
+                systemd_unit=core.systemd_unit, incidents=incidents,
+                failure_threshold=core.log_failure_threshold,
+                failure_window_seconds=core.log_failure_window_seconds,
+            )))
+        for connection in target.milky_connections:
+            scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
+            connection_incidents = incidents if connection.id == "main" else IncidentService(
+                store, notifications, config.timezone, scope,
+                f"{target.name} / {connection.name}",
+            )
+            for name, probe in (
+                ("milky-process", MilkyProcessProbe), ("qq-session", MilkySessionProbe),
+            ):
+                options = (
+                    {"probe_friend_requests": connection.probe_friend_requests}
+                    if name == "qq-session" else {}
+                )
+                monitors.append(HealthMonitor(
+                    name=f"{scope}:{name}",
+                    probe=probe(connection.base_url, connection.access_token, **options),
+                    incidents=connection_incidents,
+                    interval_seconds=connection.health_interval_seconds,
+                    failure_threshold=connection.failure_threshold,
+                    initial_delay_seconds=min(len(monitors) * 2, 20),
+                ))
+    return monitors, journals
+
+
 async def run(config_path: Path) -> None:
     config = load_config(config_path)
     logging.basicConfig(
@@ -68,7 +119,10 @@ async def run(config_path: Path) -> None:
     )
     await store.initialize()
     notifications = NotificationService(store, owner_qq=config.notifications.owner_qq)
-    incidents = IncidentService(store, notifications, timezone=config.timezone)
+    primary = next(target for target in config.monitoring_targets if target.id == "default")
+    incidents = IncidentService(
+        store, notifications, timezone=config.timezone, instance_name=primary.name
+    )
     processor = EventProcessor(notifications, incidents)
     webhook = MilkyWebhookServer(
         host=config.milky.webhook_host,
@@ -95,32 +149,7 @@ async def run(config_path: Path) -> None:
         notifications=notifications,
         interval_seconds=config.milky.reconciliation_interval_seconds,
     )
-    monitors = [
-        HealthMonitor(
-            name="milky-process",
-            probe=MilkyProcessProbe(config.milky.base_url, config.milky.access_token),
-            incidents=incidents,
-            interval_seconds=config.milky.health_interval_seconds,
-            failure_threshold=config.milky.failure_threshold,
-        ),
-        HealthMonitor(
-            name="qq-session",
-            probe=MilkySessionProbe(config.milky.base_url, config.milky.access_token),
-            incidents=incidents,
-            interval_seconds=config.milky.health_interval_seconds,
-            failure_threshold=config.milky.failure_threshold,
-        ),
-    ]
-    if config.sealdice.health_url:
-        monitors.append(
-            HealthMonitor(
-                name="sealdice-http",
-                probe=SealDiceHttpProbe(config.sealdice.health_url),
-                incidents=incidents,
-                interval_seconds=config.sealdice.health_interval_seconds,
-                failure_threshold=config.sealdice.failure_threshold,
-            )
-        )
+    monitors, journals = build_monitors(config, store, notifications, incidents)
 
     await webhook.start()
     tasks = [
@@ -146,17 +175,11 @@ async def run(config_path: Path) -> None:
                 name="supervisor-daily-token-usage-reporter",
             )
         )
-    if config.sealdice.journal_monitor_enabled and config.sealdice.systemd_unit:
-        journal_monitor = SealDiceJournalMonitor(
-            systemd_unit=config.sealdice.systemd_unit,
-            incidents=incidents,
-            failure_threshold=config.sealdice.log_failure_threshold,
-            failure_window_seconds=config.sealdice.log_failure_window_seconds,
-        )
+    for target_id, journal_monitor in journals:
         tasks.append(
             asyncio.create_task(
-                supervise("sealdice-journal-monitor", journal_monitor.run, stop),
-                name="supervisor-sealdice-journal-monitor",
+                supervise(f"{target_id}-journal", journal_monitor.run, stop),
+                name=f"supervisor-{target_id}-journal",
             )
         )
     tasks.extend(
@@ -167,7 +190,8 @@ async def run(config_path: Path) -> None:
         for index, monitor in enumerate(monitors, start=1)
     )
     logger.info(
-        "SealDice Sentinel started",
+        "SealDice Sentinel started: %d instances, %d health probes",
+        len(config.monitoring_targets), len(monitors),
         extra={
             "database_path": str(config.database_path),
             "webhook_port": config.milky.webhook_port,

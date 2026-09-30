@@ -1,6 +1,8 @@
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
+
 from sealdice_sentinel.adapters.health import MilkySessionProbe
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
 from sealdice_sentinel.models import HealthSample, ServiceName
@@ -65,3 +67,21 @@ async def _run_milky_session_probe_scenario() -> None:
         ("get_group_list", {"no_cache": True}),
         ("get_friend_requests", {"limit": 1, "is_filtered": False}),
     ]
+
+
+@pytest.mark.parametrize("groups_healthy", [True, False])
+def test_unsupported_auxiliary_api_can_be_disabled_without_skipping_live_group_check(groups_healthy):
+    async def scenario():
+        probe = MilkySessionProbe("http://127.0.0.1:3000", "token", probe_friend_requests=False)
+        calls = []
+        async def fake_call(action, payload):
+            calls.append((action, payload))
+            if action == "get_group_list":
+                return groups_healthy, None if groups_healthy else "session failed"
+            assert action == "get_login_info"
+            return True, None
+        probe._call = fake_call
+        sample = await probe.health()
+        assert sample.healthy is groups_healthy
+        assert calls == [("get_login_info", {}), ("get_group_list", {"no_cache": True})]
+    asyncio.run(scenario())

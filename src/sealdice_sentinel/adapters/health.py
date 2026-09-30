@@ -53,6 +53,13 @@ class MilkyProcessProbe(_MilkyProbe):
 class MilkySessionProbe(_MilkyProbe):
     """Verify a live QQ session, including one operation that bypasses the group cache."""
 
+    def __init__(
+        self, base_url: str, access_token: str, timeout_seconds: int = 10,
+        probe_friend_requests: bool = True,
+    ) -> None:
+        super().__init__(base_url, access_token, timeout_seconds)
+        self._probe_friend_requests = probe_friend_requests
+
     async def health(self) -> HealthSample:
         started = time.perf_counter()
         checked_at = datetime.now(UTC)
@@ -60,7 +67,7 @@ class MilkySessionProbe(_MilkyProbe):
             healthy, reason = await self._call("get_login_info", {})
             if healthy:
                 healthy, reason = await self._call("get_group_list", {"no_cache": True})
-            if healthy:
+            if healthy and self._probe_friend_requests:
                 healthy, reason = await self._call(
                     "get_friend_requests",
                     {"limit": 1, "is_filtered": False},

@@ -94,9 +94,6 @@ class SQLiteStore:
                     recovery_source TEXT
                 );
 
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_incident_per_service
-                ON incidents(service) WHERE recovered_at IS NULL;
-
                 CREATE TABLE IF NOT EXISTS current_groups (
                     group_id INTEGER PRIMARY KEY,
                     group_name TEXT NOT NULL,
@@ -152,6 +149,7 @@ class SQLiteStore:
                 ON token_usage(group_id, occurred_at);
                 """
             )
+            db.execute("BEGIN IMMEDIATE")
             columns = {
                 row[1] for row in db.execute("PRAGMA table_info(notification_outbox)")
             }
@@ -165,6 +163,18 @@ class SQLiteStore:
             incident_columns = {row[1] for row in db.execute("PRAGMA table_info(incidents)")}
             if "first_failed_at" not in incident_columns:
                 db.execute("ALTER TABLE incidents ADD COLUMN first_failed_at TEXT")
+            if "instance_id" not in incident_columns:
+                db.execute("ALTER TABLE incidents ADD COLUMN instance_id TEXT NOT NULL "
+                           "DEFAULT 'default'")
+            health_columns = {row[1] for row in db.execute("PRAGMA table_info(health_samples)")}
+            if "instance_id" not in health_columns:
+                db.execute("ALTER TABLE health_samples ADD COLUMN instance_id TEXT NOT NULL "
+                           "DEFAULT 'default'")
+            db.execute("DROP INDEX IF EXISTS idx_one_open_incident_per_service")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_incident_per_instance "
+                       "ON incidents(instance_id, service) WHERE recovered_at IS NULL")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_health_samples_instance_time "
+                       "ON health_samples(instance_id, service, checked_at)")
 
     async def record(self, usage: TokenUsage) -> bool:
         return await asyncio.to_thread(self._record_usage_sync, usage)
@@ -590,8 +600,9 @@ class SQLiteStore:
         with self._connect() as db:
             db.execute(
                 """
-                INSERT INTO health_samples(service, healthy, checked_at, latency_ms, reason)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO health_samples(
+                    service, healthy, checked_at, latency_ms, reason, instance_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sample.service.value,
@@ -599,6 +610,7 @@ class SQLiteStore:
                     sample.checked_at.isoformat(),
                     sample.latency_ms,
                     sample.reason,
+                    sample.instance_id,
                 ),
             )
 
@@ -609,19 +621,23 @@ class SQLiteStore:
         reason = sample.reason or "未提供"
         with self._connect() as db:
             existing = db.execute(
-                "SELECT id FROM incidents WHERE service = ? AND recovered_at IS NULL",
-                (sample.service.value,),
+                "SELECT id FROM incidents WHERE service = ? AND instance_id = ? "
+                "AND recovered_at IS NULL",
+                (sample.service.value, sample.instance_id),
             ).fetchone()
             if existing is not None:
                 return None
             cursor = db.execute(
                 """
-                INSERT INTO incidents(service, started_at, reason, source, first_failed_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO incidents(
+                    service, started_at, reason, source, first_failed_at, instance_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (sample.service.value, sample.checked_at.isoformat(), reason, source,
-                 (sample.first_failed_at or sample.checked_at).isoformat()),
+                 (sample.first_failed_at or sample.checked_at).isoformat(), sample.instance_id),
             )
+            if cursor.rowcount == 0:
+                return None
             return Incident(
                 incident_id=int(cursor.lastrowid),
                 service=sample.service,
@@ -629,6 +645,7 @@ class SQLiteStore:
                 reason=reason,
                 source=source,
                 first_failed_at=sample.first_failed_at or sample.checked_at,
+                instance_id=sample.instance_id,
             )
 
     async def close_incident(
@@ -636,12 +653,14 @@ class SQLiteStore:
         service: str,
         recovered_at: datetime,
         recovery_source: str,
+        instance_id: str = "default",
     ) -> Incident | None:
         return await asyncio.to_thread(
             self._close_incident_sync,
             service,
             recovered_at,
             recovery_source,
+            instance_id,
         )
 
     def _close_incident_sync(
@@ -649,27 +668,30 @@ class SQLiteStore:
         service: str,
         recovered_at: datetime,
         recovery_source: str,
+        instance_id: str,
     ) -> Incident | None:
         with self._connect() as db:
             db.row_factory = sqlite3.Row
             row = db.execute(
                 """
-                SELECT id, service, started_at, reason, source, first_failed_at
+                SELECT id, service, started_at, reason, source, first_failed_at, instance_id
                 FROM incidents
-                WHERE service = ? AND recovered_at IS NULL
+                WHERE service = ? AND instance_id = ? AND recovered_at IS NULL
                 """,
-                (service,),
+                (service, instance_id),
             ).fetchone()
             if row is None:
                 return None
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE incidents
                 SET recovered_at = ?, recovery_source = ?
-                WHERE id = ?
+                WHERE id = ? AND recovered_at IS NULL
                 """,
                 (recovered_at.isoformat(), recovery_source, row["id"]),
             )
+            if cursor.rowcount == 0:
+                return None
             return Incident(
                 incident_id=row["id"],
                 service=ServiceName(row["service"]),
@@ -680,4 +702,5 @@ class SQLiteStore:
                 recovery_source=recovery_source,
                 first_failed_at=(datetime.fromisoformat(row["first_failed_at"])
                                  if row["first_failed_at"] else None),
+                instance_id=row["instance_id"],
             )

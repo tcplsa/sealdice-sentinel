@@ -23,6 +23,36 @@ sealdice:
   log_failure_threshold: 3
   log_failure_window_seconds: 120
 
+# Optional additional availability targets. The default/main instance always uses
+# the milky and sealdice sections above; events and usage still use that main connection.
+# monitoring_targets:
+#   - id: default
+#     name: 一号海豹
+#   - id: dice2
+#     name: 二号海豹
+#     sealdice:
+#       health_url: http://127.0.0.1:3213
+#       systemd_unit: sealdice2.service
+#     milky_connections:
+#       - id: main
+#         name: QQ 账号二
+#         base_url: http://127.0.0.1:45877
+#         access_token: replace-with-existing-token
+#   - id: dice3
+#     name: 三号海豹
+#     sealdice:
+#       health_url: http://127.0.0.1:3214
+#       systemd_unit: sealdice3.service
+#     milky_connections:
+#       - id: main
+#         name: QQ 账号三
+#         base_url: http://127.0.0.1:33209
+#         access_token: replace-with-existing-token
+#       - id: second
+#         name: QQ 账号四
+#         base_url: http://127.0.0.1:43613
+#         access_token: replace-with-existing-token
+
 smtp:
   host: smtp.example.com
   port: 465

@@ -395,6 +395,13 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater rollback 
 
 ## 13. 常见问题
 
+### 群聊中的“QQ 下线了”触发告警
+
+0.5.0 起在匹配故障或恢复信号前，先排除 SealDice 收到/发出的聊天和命令日志。
+群聊、私聊正文及昵称中的 `bot_offline`、`timeout` 或“重连成功”不再作为连接证据。
+结构化 JSON 日志只匹配 `msg`/`message`，不匹配其他字段。真实协议端日志和主动 API 探测仍有效。
+已有误报应保留证据并标为监控纠正，不能把它解释成一次真实的 QQ 故障恢复。
+
 ### 可用性检查报告 `Too many open files`
 
 这表示发起检查的进程无法再打开文件或连接，不能单凭此错误认定 SealDice 已掉线。
@@ -477,3 +484,49 @@ NO_PROXY=127.0.0.1,localhost
 
 不要使用来源不明的 Release 镜像。即使最终文件会校验 SHA-256，代理仍能看到连接元数据并
 影响可用性。配置代理后重新启动更新服务即可；下载失败不会切换 `current`，现有版本会继续运行。
+
+## 14. 一个进程监控多个海豹
+
+0.5.0 支持在原配置中添加 `monitoring_targets`。默认实例 ID 为 `default`，沿用顶层
+`sealdice` 和 `milky` 设置；可以只填写名称。其他实例分别填写 WebUI、systemd 单元及
+`milky_connections`，完整三实例、四连接示例见 `config.example.yaml` 中的注释。
+
+每个连接用稳定 ID 标识，`main` 使用所属海豹的实例 ID，其他连接使用 `实例ID/连接ID`。
+实例 ID 和连接 ID 只接受字母、数字、点、下划线和短横线；重命名显示名称不会改变历史记录，
+修改 ID 则视为新增监控对象。一个 Milky 接口只应配置一次。
+
+每个实例独立检查 SealDice WebUI、Milky 实现和 QQ 实际会话，并分别监听其通信日志；
+多个对象可同时故障，各自恢复只结束自己的故障周期。告警主题和正文会注明实例名称与 ID。
+所有检查共享一个 Python 进程、数据库和通知队列，并错开启动检查，默认仍每 30 秒采样、
+连续三次失败后确认故障。配置页的“监控范围”显示检查对象与采样是否过期。
+
+只有确认某个客户端没有实现 `get_friend_requests`（例如接口返回 404）时，才在该连接
+配置中设置 `probe_friend_requests: false`。这样仍检查登录信息和绕过缓存的群列表；
+默认保留这项辅助探测，不会把超时或其他 API 故障自动降级为健康。
+主连接需要调整这项设置时，在顶层 `milky` 中配置同名字段。
+
+本次多实例功能覆盖可用性和掉线告警。好友/群事件、列表补偿查询、QQ 通知发送端与
+Token 用量入口继续使用现有主连接，新增实例不会自动配置新的 WebHook。
+
+单独同步某个内置 Yogurt 连接：
+
+```bash
+sudo python3 scripts/sync_yogurt_endpoint.py \
+  --yogurt-config /path/to/third/data/default/extra/milky-UUID/config.json \
+  --sentinel-config /etc/sealdice-sentinel/config.yaml \
+  --target-id dice3 --connection-id second
+```
+
+外置 Milky/LagrangeV2 可从海豹已保存的 `serve.yaml` 中按端点 UUID 同步：
+
+```bash
+sudo python3 scripts/sync_yogurt_endpoint.py \
+  --sealdice-config /path/to/second/data/default/serve.yaml --endpoint-id UUID \
+  --sentinel-config /etc/sealdice-sentinel/config.yaml \
+  --target-id dice2 --connection-id main
+```
+
+同步任务使用文件锁串行修改配置，保留其他连接和权限；没有变化时不写入、不重启。
+可为每个选定源文件分别设置 systemd path/oneshot 单元，安装脚本不会自行选取账号。
+扩展前请备份配置与数据库。回退到 0.4.x 应恢复单实例配置与升级前的数据库备份，
+避免旧版按服务名合并多个实例的故障；恢复数据库备份会回退升级后的记录。

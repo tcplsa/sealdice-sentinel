@@ -38,7 +38,7 @@ class MemoryIncidentRepository:
         self.open[sample.service] = incident
         return incident
 
-    async def close_incident(self, service, recovered_at, recovery_source):
+    async def close_incident(self, service, recovered_at, recovery_source, instance_id="default"):
         return self.open.pop(ServiceName(service), None)
 
 

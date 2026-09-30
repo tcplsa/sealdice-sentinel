@@ -25,6 +25,7 @@ import yaml
 from aiohttp import web
 
 from . import __version__
+from .config import load_monitoring_targets
 
 
 @dataclass(slots=True)
@@ -224,6 +225,8 @@ button.secondary:hover { background: #ecf5ff; }
 .actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 code { overflow-wrap: anywhere; color: #337ab7; background: #f1f4f7; padding: 2px 5px; border-radius: 2px; }
 details { margin-top: 16px; color: #737c87; } summary { cursor: pointer; font-weight: 600; }
+.monitoring-table { width: 100%; border-collapse: collapse; }
+.monitoring-table th, .monitoring-table td { padding: 10px; text-align: left; border-bottom: 1px solid #edf0f4; }
 .login-shell { min-height: 100vh; display: grid; place-items: center; padding: 92px 18px 32px; }
 .login-panel { grid-column: auto; width: min(430px, 100%); padding: 0; }
 .login-panel .card { padding: 30px; }
@@ -597,6 +600,72 @@ def _escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _render_monitoring_targets(settings: dict[str, Any]) -> str:
+    if not settings.get("milky") or not settings.get("sealdice"):
+        return ""
+    try:
+        targets = load_monitoring_targets(settings)
+    except (ValueError, TypeError, KeyError):
+        return '<section class="card" id="monitoring"><h2>监控范围</h2><p>监控配置需要检查。</p></section>'
+    checks = []
+    for target in targets:
+        if target.sealdice.health_url:
+            checks.append((target.id, target.name, "sealdice", "海豹 WebUI",
+                           target.sealdice.health_interval_seconds))
+        for connection in target.milky_connections:
+            scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
+            for service, description in (("yogurt", "协议端"), ("qq", "QQ 会话")):
+                checks.append((scope, target.name, service, f"{connection.name} · {description}",
+                               connection.health_interval_seconds))
+    latest = {}
+    database = Path(str(settings.get("app", {}).get("database_path", "")))
+    if database.is_file():
+        try:
+            with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)) as db:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(health_samples)")}
+                for scope, _, service, _, _ in checks:
+                    if "instance_id" in columns:
+                        row = db.execute(
+                            "SELECT healthy, checked_at FROM health_samples WHERE instance_id=? "
+                            "AND service=? ORDER BY checked_at DESC LIMIT 1", (scope, service),
+                        ).fetchone()
+                    elif scope == "default":
+                        row = db.execute(
+                            "SELECT healthy, checked_at FROM health_samples WHERE service=? "
+                            "ORDER BY checked_at DESC LIMIT 1", (service,),
+                        ).fetchone()
+                    else:
+                        row = None
+                    latest[scope, service] = row
+        except sqlite3.Error:
+            latest.clear()
+    rows = []
+    for scope, name, service, description, interval in checks:
+        row = latest.get((scope, service))
+        state, checked = "尚无采样", "—"
+        if row:
+            try:
+                sampled = datetime.fromisoformat(row[1])
+                if sampled.tzinfo is None:
+                    sampled = sampled.replace(tzinfo=UTC)
+                age = (datetime.now(UTC) - sampled).total_seconds()
+                state = "采样已过期" if age > max(interval * 3, 90) else "正常" if row[0] else "异常"
+                checked = sampled.astimezone(ZoneInfo(
+                    settings.get("app", {}).get("timezone", "UTC")
+                )).isoformat(timespec="seconds")
+            except (ValueError, TypeError):
+                state = "采样时间无效"
+        rows.append(f"<tr><td>{_escape(name)}</td><td>{_escape(description)}</td>"
+                    f"<td>{_escape(state)}</td><td>{_escape(checked)}</td></tr>")
+    return ('<section class="card" id="monitoring"><h2>监控范围</h2>'
+            f'<p class="muted">共 {len(targets)} 个海豹、'
+            f'{sum(len(target.milky_connections) for target in targets)} 个 QQ 连接。'
+            '可用性和掉线告警按实例区分；好友、群事件与用量入口使用当前主连接。</p>'
+            '<div style="overflow-x:auto"><table class="monitoring-table">'
+            '<thead><tr><th>实例</th><th>检查项</th><th>状态</th><th>最近检查</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div></section>')
+
+
 def _render_page(
     csrf_token: str,
     sealdice_path: str,
@@ -834,6 +903,7 @@ def _render_page(
 <aside class="sidebar" aria-label="配置导航">
   <div class="nav-title">监控台</div>
   <a class="nav-link active" href="#overview"><span class="nav-icon">⌂</span>配置首页</a>
+  <a class="nav-link" href="#monitoring"><span class="nav-icon">◎</span>监控范围</a>
   <a class="nav-link" href="#connections"><span class="nav-icon">⌁</span>QQ 连接</a>
   <a class="nav-link" href="#milky-settings"><span class="nav-icon">◇</span>Milky 设置</a>
   <a class="nav-link" href="#mail-settings"><span class="nav-icon">✉</span>邮件通知</a>
@@ -847,6 +917,7 @@ def _render_page(
     <p class="muted">扫描 SealDice，管理连接、通知和更新设置。</p></div>
     <div class="pill">安全会话已启用</div></header>
   {status_html}
+  {_render_monitoring_targets(settings)}
   {usage_html}
   <section class="card notice" id="discovery">
     <div class="section-heading"><div><h2>定位 SealDice</h2>

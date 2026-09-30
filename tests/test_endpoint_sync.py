@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -56,3 +57,70 @@ def test_nonlocal_endpoint_is_rejected_without_changing_settings(tmp_path):
     with pytest.raises(ValueError, match="loopback"):
         sync_endpoint(source, target)
     assert target.read_bytes() == before
+
+
+def multi_settings():
+    return {"milky": {"base_url": "http://127.0.0.1:3000", "access_token": "primary"},
+            "monitoring_targets": [{"id": "dice3", "milky_connections": [
+                {"id": "main", "base_url": "http://127.0.0.1:3100", "access_token": "first"},
+                {"id": "second", "base_url": "http://127.0.0.1:3200", "access_token": "second"},
+            ]}]}
+
+
+def test_selected_target_updates_without_changing_other_connections(tmp_path):
+    source = tmp_path / "yogurt.json"
+    target = tmp_path / "sentinel.yaml"
+    original = multi_settings()
+    source.write_text(json.dumps({"configVersion": 3, "milky": {"http": {
+        "host": "127.0.0.1", "port": 43210, "accessToken": "updated"}}}))
+    target.write_text(yaml.safe_dump(original))
+    assert sync_endpoint(source, target, "dice3", "second")
+    updated = yaml.safe_load(target.read_text())
+    assert updated["milky"] == original["milky"]
+    connections = updated["monitoring_targets"][0]["milky_connections"]
+    assert connections[0] == original["monitoring_targets"][0]["milky_connections"][0]
+    assert connections[1]["base_url"] == "http://127.0.0.1:43210"
+    assert connections[1]["access_token"] == "updated"
+    assert not sync_endpoint(source, target, "dice3", "second")
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match="not found"):
+        sync_endpoint(source, target, "unknown", "second")
+    assert target.read_bytes() == before
+
+
+def test_external_milky_endpoint_follows_selected_sealdice_adapter(tmp_path):
+    source = tmp_path / "serve.yaml"
+    target = tmp_path / "sentinel.yaml"
+    source.write_text(yaml.safe_dump({"imSession": {"endPoints": [
+        {"baseInfo": {"id": "selected", "enable": True}, "adapter": {
+            "rest_gateway": "http://127.0.0.1:45877/api", "token": "lagrange-token"}},
+        {"baseInfo": {"id": "other", "enable": True}, "adapter": {
+            "rest_gateway": "http://127.0.0.1:9999/api", "token": "do-not-use"}},
+    ]}}))
+    target.write_text(yaml.safe_dump(multi_settings()))
+    assert sync_endpoint(source, target, "dice3", "main", "selected")
+    settings = yaml.safe_load(target.read_text())
+    connection = settings["monitoring_targets"][0]["milky_connections"][0]
+    assert connection["base_url"] == "http://127.0.0.1:45877"
+    assert connection["access_token"] == "lagrange-token"
+    assert not sync_endpoint(source, target, "dice3", "main", "selected")
+
+
+@pytest.mark.skipif(_module.fcntl is None, reason="Linux file locks are unavailable")
+def test_simultaneous_endpoint_updates_preserve_both_changes(tmp_path):
+    target = tmp_path / "sentinel.yaml"
+    target.write_text(yaml.safe_dump(multi_settings()))
+    sources = []
+    for index, port in enumerate((45001, 45002)):
+        source = tmp_path / f"yogurt{index}.json"
+        source.write_text(json.dumps({"configVersion": 3, "milky": {"http": {
+            "host": "127.0.0.1", "port": port, "accessToken": f"token{index}"}}}))
+        sources.append(source)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(sync_endpoint, source, target, "dice3", connection)
+                   for source, connection in zip(sources, ("main", "second"))]
+        assert all(future.result() for future in futures)
+    connections = yaml.safe_load(target.read_text())["monitoring_targets"][0]["milky_connections"]
+    assert [connection["base_url"] for connection in connections] == [
+        "http://127.0.0.1:45001", "http://127.0.0.1:45002",
+    ]

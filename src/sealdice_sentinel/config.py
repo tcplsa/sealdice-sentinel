@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -19,6 +21,7 @@ class MilkyConfig:
     health_interval_seconds: int = 30
     failure_threshold: int = 3
     reconciliation_interval_seconds: int = 300
+    probe_friend_requests: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -30,6 +33,25 @@ class SealDiceConfig:
     journal_monitor_enabled: bool = True
     log_failure_threshold: int = 3
     log_failure_window_seconds: int = 120
+
+
+@dataclass(slots=True, frozen=True)
+class MonitoringConnection:
+    id: str
+    name: str
+    base_url: str
+    access_token: str = field(repr=False)
+    health_interval_seconds: int = 30
+    failure_threshold: int = 3
+    probe_friend_requests: bool = True
+
+
+@dataclass(slots=True, frozen=True)
+class MonitoringTarget:
+    id: str
+    name: str
+    sealdice: SealDiceConfig
+    milky_connections: tuple[MonitoringConnection, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -83,6 +105,101 @@ class AppConfig:
     token_usage: TokenUsageConfig
     updates: UpdateConfig
     raw: dict[str, Any]
+    monitoring_targets: tuple[MonitoringTarget, ...] = ()
+
+
+def _monitor_id(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+        raise ValueError("monitoring IDs must use 1-64 letters, numbers, dots, underscores or hyphens")
+    return value
+
+
+def _check_http_url(value: str) -> None:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+        raise ValueError("monitoring URLs must be HTTP(S) addresses without embedded credentials")
+    if parsed.fragment or parsed.query:
+        raise ValueError("monitoring URLs must not contain query strings or fragments")
+    _ = parsed.port  # Validate malformed/out-of-range ports too.
+
+
+def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...]:
+    """Keep the existing main connection and add independently scoped health targets."""
+    milky = MilkyConfig(**data["milky"])
+    sealdice = SealDiceConfig(**data["sealdice"])
+    raw_targets = data.get("monitoring_targets", [])
+    if not isinstance(raw_targets, list):
+        raise TypeError("monitoring_targets must be a list")
+    if any(not isinstance(item, dict) for item in raw_targets):
+        raise ValueError("each monitoring target must be an object")
+    if not any(item.get("id") == "default" for item in raw_targets):
+        raw_targets = [{"id": "default", "name": "主海豹"}, *raw_targets]
+    targets = []
+    seen_ids = set()
+    seen_urls = set()
+    for entry in raw_targets:
+        target_id = _monitor_id(entry.get("id"))
+        if target_id in seen_ids:
+            raise ValueError(f"duplicate monitoring target: {target_id}")
+        seen_ids.add(target_id)
+        name = str(entry.get("name", target_id)).strip()
+        if not name:
+            raise ValueError("monitoring target names must not be empty")
+        settings = entry.get("sealdice", {})
+        if not isinstance(settings, dict):
+            raise TypeError("monitoring target sealdice settings must be an object")
+        if target_id == "default":
+            if settings:
+                raise ValueError("configure the default SealDice using the top-level sealdice section")
+            core = sealdice
+        else:
+            core = replace(sealdice, **{"health_url": None, "systemd_unit": None, **settings})
+        if core.health_url:
+            _check_http_url(core.health_url)
+        for value in (core.health_interval_seconds, core.failure_threshold,
+                      core.log_failure_threshold, core.log_failure_window_seconds):
+            if not isinstance(value, int) or value < 1:
+                raise ValueError("monitoring intervals and failure thresholds must be positive integers")
+        raw_connections = entry.get("milky_connections", [])
+        if not isinstance(raw_connections, list):
+            raise TypeError("milky_connections must be a list")
+        if target_id == "default":
+            raw_connections = [{
+                "id": "main", "name": "主 QQ 连接", "base_url": milky.base_url,
+                "access_token": milky.access_token,
+                "probe_friend_requests": milky.probe_friend_requests,
+            }, *raw_connections]
+        connections = []
+        connection_ids = set()
+        for connection in raw_connections:
+            if not isinstance(connection, dict):
+                raise TypeError("each monitored connection must be an object")
+            connection_id = _monitor_id(connection.get("id"))
+            if connection_id in connection_ids:
+                raise ValueError(f"duplicate connection in {target_id}: {connection_id}")
+            connection_ids.add(connection_id)
+            base_url = str(connection.get("base_url", "")).rstrip("/")
+            _check_http_url(base_url)
+            if base_url in seen_urls:
+                raise ValueError("a Milky endpoint may only be monitored once")
+            seen_urls.add(base_url)
+            interval = connection.get("health_interval_seconds", milky.health_interval_seconds)
+            threshold = connection.get("failure_threshold", milky.failure_threshold)
+            if any(not isinstance(value, int) or value < 1 for value in (interval, threshold)):
+                raise ValueError("connection intervals and failure thresholds must be positive integers")
+            auxiliary = connection.get("probe_friend_requests", True)
+            if not isinstance(auxiliary, bool):
+                raise TypeError("probe_friend_requests must be true or false")
+            connections.append(MonitoringConnection(
+                id=connection_id, name=str(connection.get("name", connection_id)),
+                base_url=base_url, access_token=str(connection.get("access_token", "")),
+                health_interval_seconds=interval, failure_threshold=threshold,
+                probe_friend_requests=auxiliary,
+            ))
+        if not core.health_url and not core.systemd_unit and not connections:
+            raise ValueError(f"monitoring target has nothing to check: {target_id}")
+        targets.append(MonitoringTarget(target_id, name, core, tuple(connections)))
+    return tuple(targets)
 
 
 def load_config(path: Path) -> AppConfig:
@@ -144,6 +261,7 @@ def load_config(path: Path) -> AppConfig:
             python_executable=updates.get("python_executable", "/usr/bin/python3"),
         ),
         raw=data,
+        monitoring_targets=load_monitoring_targets(data),
     )
 
 
