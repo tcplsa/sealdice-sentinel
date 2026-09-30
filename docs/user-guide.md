@@ -395,6 +395,33 @@ sudo /opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-updater rollback 
 
 ## 13. 常见问题
 
+### 可用性检查报告 `Too many open files`
+
+这表示发起检查的进程无法再打开文件或连接，不能单凭此错误认定 SealDice 已掉线。
+先查看 Sentinel 的实际进程限制和句柄数量，并用另一个进程访问 SealDice WebUI。
+若大量句柄指向 `sentinel.db`，应检查数据库连接是否显式关闭。
+
+0.4.1 的数据库访问只使用 SQLite 的事务上下文，没有显式关闭连接，持续运行时可能积累
+数据库句柄、占满句柄限制并增加内存占用。0.4.2 已修复正常、异常和提前返回路径；
+部署修复后重启 Sentinel 可释放旧句柄，无需重启 SealDice 或服务器。
+只增加句柄限制会延后故障，应以修复连接释放为主。
+
+### 内置 Yogurt 重启后 HTTP 端口变化
+
+0.4.2 源码包的 `scripts/sync_yogurt_endpoint.py` 可同步一个已选定的本机 Yogurt 连接。
+使用运行中的 Yogurt `config.json` 路径执行：
+
+```bash
+sudo python3 scripts/sync_yogurt_endpoint.py \
+  --yogurt-config /path/to/dice/data/default/extra/milky-UUID/config.json \
+  --sentinel-config /etc/sealdice-sentinel/config.yaml
+```
+
+脚本需要 PyYAML，只同步 `milky.base_url` 和 Yogurt 已有的 `accessToken`；首次修改前备份
+Sentinel 配置，保留属主与权限。设置变化后请求重启正在运行的 Sentinel，未变化时不写文件、
+不重启。只接受本机地址，不修改 Yogurt 的 QQ 登录和 WebHook 配置。
+需要持续同步时可由 systemd path 单元监视这个指定文件；安装脚本不会自动选择或监视连接。
+
 ### 服务启动失败
 
 先查看日志：

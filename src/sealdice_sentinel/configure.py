@@ -13,6 +13,7 @@ import sqlite3
 import tempfile
 import time
 from collections import defaultdict, deque
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -942,7 +943,7 @@ def _load_usage_summary(settings: dict[str, Any]) -> dict[str, Any]:
         return tuple(int(value) for value in row)
 
     try:
-        with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=2) as db:
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=2)) as db:
             exists = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_usage'"
             ).fetchone()

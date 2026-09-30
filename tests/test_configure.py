@@ -47,6 +47,37 @@ def test_backup_and_write_preserves_file_metadata(tmp_path, monkeypatch) -> None
     assert chown_calls[0][1:] == (original.st_uid, original.st_gid)
 
 
+@pytest.mark.parametrize("schema", ["missing", "valid", "invalid"])
+def test_usage_summary_closes_connection_on_every_exit(tmp_path, monkeypatch, schema) -> None:
+    database = tmp_path / "sentinel.db"
+    original_connect = sqlite3.connect
+    setup = original_connect(database)
+    if schema == "valid":
+        setup.execute(
+            "CREATE TABLE token_usage (input_tokens INTEGER, output_tokens INTEGER, "
+            "total_tokens INTEGER, cached_tokens INTEGER, reasoning_tokens INTEGER, "
+            "occurred_at TEXT)"
+        )
+    elif schema == "invalid":
+        setup.execute("CREATE TABLE token_usage (unexpected_column INTEGER)")
+    setup.commit()
+    setup.close()
+    connections = []
+
+    def tracked_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    for _ in range(10):
+        summary = _load_usage_summary({"app": {"database_path": str(database)}})
+        assert summary["available"] is (schema == "valid")
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+
 def test_usage_summary_reads_token_database(tmp_path) -> None:
     database = tmp_path / "sentinel.db"
     with sqlite3.connect(database) as db:

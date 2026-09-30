@@ -2,8 +2,17 @@ import asyncio
 import sqlite3
 from datetime import UTC, datetime
 
+import pytest
+
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
-from sealdice_sentinel.models import MilkyEvent, Notification, NotificationChannel, Severity
+from sealdice_sentinel.models import (
+    HealthSample,
+    MilkyEvent,
+    Notification,
+    NotificationChannel,
+    ServiceName,
+    Severity,
+)
 
 
 def test_event_and_notification_are_deduplicated(tmp_path) -> None:
@@ -68,3 +77,53 @@ def test_existing_outbox_is_migrated_for_notification_channels(tmp_path) -> None
     with sqlite3.connect(path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(notification_outbox)")}
     assert {"channel", "recipient"} <= columns
+
+
+def test_repeated_polling_closes_connections_without_garbage_collection(
+    tmp_path, monkeypatch
+) -> None:
+    original_connect = sqlite3.connect
+    connections = []
+
+    def tracked_connect(*args, **kwargs):
+        kwargs["check_same_thread"] = False
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    store = SQLiteStore(tmp_path / "sentinel.db")
+
+    async def poll_repeatedly():
+        await store.initialize()
+        for _ in range(50):
+            await store.record_health_sample(
+                HealthSample(ServiceName.SEALDICE, True, datetime.now(UTC))
+            )
+            assert await store.pending() == []
+
+    asyncio.run(poll_repeatedly())
+    # Keep every connection alive so GC cannot hide a missing close.
+    assert len(connections) == 101
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+    with original_connect(store._path) as db:
+        assert db.execute("SELECT COUNT(*) FROM health_samples").fetchone()[0] == 50
+
+
+def test_connection_rolls_back_and_closes_on_failure(tmp_path, monkeypatch) -> None:
+    store = SQLiteStore(tmp_path / "sentinel.db")
+    asyncio.run(store.initialize())
+    connection = sqlite3.connect(store._path)
+    monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connection)
+
+    with pytest.raises(RuntimeError, match="test failure"), store._connect() as db:
+        db.execute("INSERT INTO monitor_metadata(key, value) VALUES ('test', 'value')")
+        raise RuntimeError("test failure")
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+    monkeypatch.undo()
+    with sqlite3.connect(store._path) as db:
+        assert db.execute("SELECT COUNT(*) FROM monitor_metadata").fetchone()[0] == 0

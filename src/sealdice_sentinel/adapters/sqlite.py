@@ -6,6 +6,8 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -370,8 +372,14 @@ class SQLiteStore:
                 (attempts, time.time() + delay, reason[:2000], dedup_key),
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._path, timeout=10)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        db = sqlite3.connect(self._path, timeout=10)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     async def reconcile_groups(
         self,

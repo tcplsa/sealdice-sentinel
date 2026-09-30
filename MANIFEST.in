@@ -1,0 +1,5 @@
+include CHANGELOG.md
+include config.example.yaml
+recursive-include scripts *.py *.sh
+recursive-include systemd *.service *.timer
+recursive-include docs *.md
