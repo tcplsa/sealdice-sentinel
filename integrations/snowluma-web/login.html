@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SnowLuma 扫码登录</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#fff;color:#303133;font:14px/1.6 system-ui,sans-serif}main{padding:8px 4px}p{margin:6px 0}.muted{color:#737980}.status{display:flex;align-items:center;gap:9px;font-weight:600}.dot{height:9px;width:9px;border-radius:50%;background:#e6a23c}button{border:1px solid #dcdfe6;background:#fff;color:#303133;border-radius:4px;padding:8px 12px;font:inherit;cursor:pointer}button.primary{background:#409eff;border-color:#409eff;color:white}button:disabled{opacity:.5;cursor:default}.actions{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0}#screen{width:100%;max-width:360px;height:500px;margin:10px auto;background:#eef1f5;overflow:hidden}#error{color:#b34e25;white-space:pre-wrap}summary{cursor:pointer;color:#737980}details{margin-top:12px}#done{color:#337ecc;cursor:pointer}a{color:#337ecc}#auth-warning{padding:10px 0}
+</style></head><body><main>
+<div class="status"><span class="dot" id="dot"></span><span id="state">正在验证登录…</span></div>
+<p>QQ <strong>2325552935</strong></p><p class="muted" id="hint">请用对应账号的手机 QQ 扫码确认。</p>
+<div id="auth-warning" hidden>请关闭本窗口，重新登录海豹 WebUI 后再试。</div>
+<div class="actions"><button id="show" disabled>重新打开扫码窗口</button><button id="connect" class="primary" disabled>已扫码，连接</button><button id="done" hidden>完成，返回账号列表</button></div>
+<p id="error" role="alert"></p>
+<div id="screen"></div>
+<details><summary>窗口卡住或需要重新登录</summary><p class="muted">仅重启主号 QQ 客户端，可能需要重新扫码。</p><button id="restart" disabled>重启登录客户端</button></details>
+</main><script type="module">
+const $=id=>document.getElementById(id);
+let rfb,timer,inProgress=false,refreshing=false,connectRequested=false;
+async function api(path,body){const r=await fetch('/qq-login/'+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store'});if(!r.ok){if(r.status===401){$('auth-warning').hidden=false;for(const id of ['show','connect','restart'])$(id).disabled=true;clearInterval(timer);rfb?.disconnect()}throw new Error(await r.text())}return r.json()}
+function done(){window.parent.postMessage({type:'snowluma-connected'},location.origin)}
+async function refresh(){if(refreshing)return;refreshing=true;try{const s=await api('status');const states={waiting_login:['等待扫码','用 2325552935 扫码并在手机确认。过期可点击二维码中的“刷新”。'],wrong_account:['登录账号不匹配','请退出其他账号，使用 2325552935 登录。'],ready:['QQ 已登录，等待连接','点击“已扫码，连接”，会停用本账号的旧连接并接入海豹。'],connected:['已连接','主号正在使用 SnowLuma，可返回账号列表。']};const info=states[s.state]||['状态暂不可用','请稍后刷新'];$('state').textContent=info[0];$('hint').textContent=info[1];$('dot').style.background=s.state==='connected'?'#67c23a':'#e6a23c';$('connect').disabled=!s.can_connect||inProgress;$('done').hidden=s.state!=='connected';if(s.action?.state==='running'){$('hint').textContent='正在连接，请稍候…';$('connect').disabled=true}else if(s.action?.state==='failed'){$('error').textContent='上次连接没有完成，请确认扫码登录状态后重试。'}if(s.state==='connected'){$('error').textContent='';if(connectRequested)done()}}catch(e){$('error').textContent=e.message}finally{refreshing=false}}
+async function openDesktop(){try{rfb?.disconnect();const info=await api('connection');const {default:RFB}=await import('/qq-login/novnc-bundle.js');rfb=new RFB($('screen'),(location.protocol==='https:'?'wss://':'ws://')+location.host+'/qq-login/socket',{credentials:{password:info.password}});rfb.scaleViewport=true;rfb.resizeSession=false;rfb.background='#eef1f5';rfb.addEventListener('securityfailure',()=>{$('error').textContent='扫码窗口认证失败，请重新打开登录窗口。'});rfb.addEventListener('disconnect',()=>{$('show').textContent='重新打开扫码窗口'})}catch(e){$('error').textContent=e.message}}
+async function act(name){inProgress=true;$('connect').disabled=true;$('restart').disabled=true;$('error').textContent='';try{await api('action/'+name,{});connectRequested=name==='connect';$('hint').textContent=name==='connect'?'正在连接，请稍候…':'正在重启登录客户端…'}catch(e){$('error').textContent=e.message}finally{inProgress=false;$('restart').disabled=false;await refresh()}}
+$('show').onclick=openDesktop;$('connect').onclick=()=>act('connect');$('done').onclick=done;$('restart').onclick=()=>{if(confirm('重启主号 2325552935 的 QQ 客户端，可能需要重新扫码。继续？'))act('restart')};
+if(window.parent===window){location.replace('/#/connect')}else{try{const token=localStorage.getItem('t');if(!token)throw new Error('请先登录海豹 WebUI。');await api('session',{token});$('show').disabled=false;$('restart').disabled=false;await refresh();timer=setInterval(refresh,5000);await openDesktop()}catch(e){$('state').textContent='需要登录海豹 WebUI';$('auth-warning').hidden=false;$('error').textContent=e.message}}
+window.addEventListener('pagehide',()=>{clearInterval(timer);rfb?.disconnect()});
+</script></body></html>
