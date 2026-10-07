@@ -95,7 +95,7 @@ def render_diagnostics(settings: dict) -> str:
     names = {target.id: target.name for target in targets}
     names.update({"sentinel": "监控服务", "sampler": "资源采样"})
     port_names = {(target.id, urlsplit(connection.base_url).port): connection.name for target in targets
-        for connection in target.milky_connections}
+        for connection in (*target.milky_connections, *target.onebot_connections)}
     for target_id, target in latest.get("targets", {}).items():
         for process in target.get("processes", []):
             account = next((port_names[target_id, port] for port in process.get("listening_ports", [])

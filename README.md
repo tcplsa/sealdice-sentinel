@@ -74,3 +74,23 @@ sealdice-sentinel/
 诊断不会代理消息、修改客户端、重启或重新登录。当前版本不具备逐条签名、发送锁等待、
 SSO 回执或最终投递的追踪能力；报告明确区分可观测证据、候选原因和未知环节。
 启用与权限说明见 [运行诊断](docs/diagnostics.md)。
+
+
+### OneBot / SnowLuma 发送计时（可选）
+
+在对应 `monitoring_targets` 下使用 `onebot_connections`。每项包含 `id`、`name`、
+`base_url`（如 `http://127.0.0.1:38000`）、`ws_url`（如 `ws://127.0.0.1:38001`）、
+`relay_port`（如 `38002`）、非空 `access_token` 与 `expected_user_id`（如 `QQ:123456789`）。
+端口必须独立并且只监听本机。海豹正向 OneBot WebSocket 连接填写本机转发端口和相同令牌。
+`monitoring_enabled: false` 用于尚未扫码的准备阶段；转发照常运行，只读健康探测暂不执行。
+
+转发只测量已有请求 echo 对应的 API 返回耗时，原样传递文本与二进制帧，不新增 echo、
+不重发消息。最多跟踪 128 个请求、120 秒，采集队列最多 256 项；超出容量会留下缺口标记。
+发送 API 返回成功并不等于 QQ 最终投递成功，异步接受及无法匹配的返回不作为成功计时。
+这是一项可选消息通路依赖：Sentinel 重启会中断 WebSocket，海豹须具备自动重连能力。
+回退时将海豹连接指向协议端原始 WebSocket 地址即可绕过转发。
+新增发送耗时、错误和未确认结果只保留本地证据；持续接口不可用沿用健康检查的邮件策略。
+
+独立客户端可在 `diagnostics.extra_resource_units` 配置，例如
+`dice3/snowluma: snowluma-dice3.service`，资源采样器会把该服务纳入三号故障现场。
+海豹回复计时扩展同时适用于经过验证会在发送 API 成功后调用回调的 Milky / pureonebot 版本。

@@ -27,6 +27,7 @@ def run(config_path: Path, once: bool = False) -> None:
              if target.sealdice.systemd_unit}
     units.update({"sentinel": "sealdice-sentinel.service",
                   "sampler": "sealdice-sentinel-resources.service"})
+    units.update(config.extra_resource_units)
     # Root must not create files through symlinks supplied by an unprivileged service.
     database = config.resource_database_path
     for path in (database, *database.parents):

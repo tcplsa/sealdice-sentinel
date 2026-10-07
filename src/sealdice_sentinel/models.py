@@ -9,6 +9,7 @@ from typing import Any
 class ServiceName(StrEnum):
     QQ = "qq"
     YOGURT = "yogurt"
+    ONEBOT = "onebot"
     SEALDICE = "sealdice"
     SEALDICE_LINK = "sealdice_link"
     SMTP = "smtp"

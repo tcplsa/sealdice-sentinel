@@ -16,6 +16,7 @@ from .adapters.health import (
     SealDiceHttpProbe,
 )
 from .adapters.milky import MilkyApiClient, MilkyQqNotifier
+from .adapters.onebot import OneBotProbe, OneBotRelay
 from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
 from .adapters.webhook import MilkyWebhookServer
@@ -123,6 +124,25 @@ def build_monitors(
                 monitors.append(HealthMonitor(
                     name=f"{scope}:{name}",
                     probe=probe(connection.base_url, connection.access_token, **options),
+                    incidents=connection_incidents,
+                    interval_seconds=connection.health_interval_seconds,
+                    failure_threshold=connection.failure_threshold,
+                    initial_delay_seconds=min(len(monitors) * 2, 20),
+                    observer=partial(diagnostics.record_health, scope, name) if diagnostics else None,
+                ))
+        for connection in target.onebot_connections:
+            if not connection.monitoring_enabled:
+                continue
+            scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
+            connection_incidents = IncidentService(
+                store, notifications, config.timezone, scope, target.name + " / " + connection.name,
+                diagnostic_context=diagnostics.incident_context if diagnostics else None,
+                email_delay_seconds=config.notifications.incident_email_delay_seconds,
+            )
+            reply_incidents[connection.expected_user_id] = connection_incidents
+            for name, session in (("onebot-process", False), ("onebot-session", True)):
+                monitors.append(HealthMonitor(
+                    name=f"{scope}:{name}", probe=OneBotProbe(connection, session),
                     incidents=connection_incidents,
                     interval_seconds=connection.health_interval_seconds,
                     failure_threshold=connection.failure_threshold,
@@ -241,6 +261,12 @@ async def run(config_path: Path) -> None:
         tasks.append(asyncio.create_task(
             supervise("diagnostics", diagnostics.run, stop), name="supervisor-diagnostics",
         ))
+    for target in config.monitoring_targets:
+        for connection in target.onebot_connections:
+            scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
+            relay = OneBotRelay(connection, partial(diagnostics.record_onebot, scope)
+                                if diagnostics else None)
+            tasks.append(asyncio.create_task(supervise(f"{scope}-onebot", relay.run, stop)))
     for target_id, journal_monitor in journals:
         tasks.append(
             asyncio.create_task(

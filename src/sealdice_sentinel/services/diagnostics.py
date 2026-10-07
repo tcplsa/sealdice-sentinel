@@ -36,6 +36,9 @@ LIMITATIONS = (
 )
 
 TRIGGER_LABELS = {
+    "onebot_send_failed": "OneBot 发送 API 返回错误",
+    "onebot_send_unobserved": "OneBot 发送结果未确认",
+    "slow_onebot_send": "OneBot 发送 API 返回慢",
     "health_failure": "接口探测失败", "send_failed": "发送接口异常",
     "slow_reply": "回复 API 成功但耗时偏高", "slow_readonly_probe": "只读接口响应慢",
     "reply_progress_unobserved": "等待回复完成回调超时（未确认掉线）",
@@ -100,8 +103,11 @@ def resource_findings(samples: list[dict], target_id: str, now: datetime,
     for sample in samples:
         host = sample.get("host", {})
         target = sample.get("targets", {}).get(target_id, {})
-        if target_id == "server":
-            services = list(sample.get("targets", {}).values())
+        if target_id == "server" or any(key.startswith(target_id + "/")
+                                        for key in sample.get("targets", {})):
+            services = [value for key, value in sample.get("targets", {}).items()
+                        if target_id == "server" or key == target_id
+                        or key.startswith(target_id + "/")]
             target = {"memory_event_rates": {
                 key: sum(service.get("memory_event_rates", {}).get(key) or 0 for service in services)
                 for key in ("high", "oom_kill")
@@ -130,7 +136,7 @@ def resource_findings(samples: list[dict], target_id: str, now: datetime,
             if (process.get("fd_limit") and process.get("fd_count") is not None
                     and process["fd_count"] / process["fd_limit"] >= 0.8):
                 pressure_counts["fds"] += 1
-            if process.get("name", "").lower() in {"yogurt", "lagrangev2"}:
+            if process.get("name", "").lower() in {"yogurt", "lagrangev2", "qq", "node"}:
                 for connection in process.get("connections", []):
                     if connection.get("loopback"):
                         continue
@@ -181,6 +187,13 @@ def report_findings(resources: list[dict], observations: list[dict], scope: str,
         result.append(f"海豹日志报告 {len(failures)} 次发送 API 异常；说明发送请求未及时成功，"
                       "不能仅凭该日志区分 Yogurt 内部处理、签名服务或 QQ 回执等待。")
     reply_samples = [entry for entry in observations if entry.get("event") == "reply_api_completed"]
+    onebot_sends = [entry for entry in observations
+                   if entry.get("event", "").startswith("onebot_send_")]
+    if onebot_sends:
+        completed = [entry for entry in onebot_sends if entry["event"] == "onebot_send_completed"]
+        result.append(f"OneBot 发送计时：成功返回 {len(completed)} 次，错误／结果未确认 "
+                      f"{len(onebot_sends) - len(completed)} 次；仅关联原始请求 echo，"
+                      "不验证 QQ 最终投递。此段耗时不包含请求发出之前的海豹处理。")
     slow_replies = [entry for entry in reply_samples if entry.get("slow")]
     if slow_replies:
         worst = max(entry["duration_ms"] for entry in slow_replies)
@@ -229,10 +242,11 @@ class DiagnosticsService:
         self.store = DiagnosticStore(config.database_path)
         self.notifications = notifications
         self.names = {target.id: target.name for target in targets}
+        self.names.update({key: key for key in config.extra_resource_units})
         self.ports: dict[tuple[str, int], str] = {}
         self.accounts: dict[tuple[str, str], str] = {}
         for target in targets:
-            for connection in target.milky_connections:
+            for connection in (*target.milky_connections, *target.onebot_connections):
                 scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
                 self.names[scope] = target.name + " / " + connection.name
                 self.ports[target.id, urlsplit(connection.base_url).port] = scope
@@ -273,6 +287,14 @@ class DiagnosticsService:
             await self.capture(scope, "health_failure", sample.checked_at)
         elif (sample.latency_ms or 0) >= self.config.slow_probe_threshold_ms:
             await self.capture(scope, "slow_readonly_probe", sample.checked_at)
+
+    async def record_onebot(self, scope: str, payload: dict) -> None:
+        now = datetime.now(UTC)
+        await asyncio.to_thread(self.store.append_observation, now, scope, "onebot_send", payload)
+        if payload["event"] in {"onebot_send_failed", "onebot_send_unobserved"}:
+            await self.capture(scope, payload["event"], now)
+        elif payload.get("elapsed_ms", 0) >= self.config.slow_reply_threshold_ms:
+            await self.capture(scope, "slow_onebot_send", now)
 
     async def record_log(self, target_id: str, line: str, occurred_at: datetime) -> None:
         timing = parse_reply_observation(line)
@@ -329,7 +351,9 @@ class DiagnosticsService:
         # Store only the target's processes in account reports, but keep host metrics.
         target = scope.split("/")[0]
         if target != "server":
-            resources = [{**entry, "targets": {target: entry.get("targets", {}).get(target, {})}}
+            resources = [{**entry, "targets": {key: value
+                          for key, value in entry.get("targets", {}).items()
+                          if key == target or key.startswith(target + "/")}}
                          for entry in resources]
         return resources, observations
 

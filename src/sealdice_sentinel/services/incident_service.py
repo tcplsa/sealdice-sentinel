@@ -12,8 +12,9 @@ from .notification_service import NotificationService
 SERVICE_LABELS = {
     ServiceName.QQ: "QQ 会话",
     ServiceName.YOGURT: "Milky 协议端",
+    ServiceName.ONEBOT: "OneBot 协议端",
     ServiceName.SEALDICE: "SealDice",
-    ServiceName.SEALDICE_LINK: "SealDice-Milky 通信链路",
+    ServiceName.SEALDICE_LINK: "SealDice 通信链路",
     ServiceName.SMTP: "SMTP",
     ServiceName.RESOURCES: "服务器资源压力",
 }

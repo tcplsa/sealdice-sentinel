@@ -61,12 +61,27 @@ class OfficialQQConnection:
 
 
 @dataclass(slots=True, frozen=True)
+class OneBotConnection:
+    id: str
+    name: str
+    base_url: str
+    access_token: str = field(repr=False)
+    expected_user_id: str
+    ws_url: str
+    relay_port: int
+    health_interval_seconds: int = 30
+    failure_threshold: int = 3
+    monitoring_enabled: bool = True
+
+
+@dataclass(slots=True, frozen=True)
 class MonitoringTarget:
     id: str
     name: str
     sealdice: SealDiceConfig
     milky_connections: tuple[MonitoringConnection, ...]
     official_connections: tuple[OfficialQQConnection, ...] = ()
+    onebot_connections: tuple[OneBotConnection, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -133,6 +148,7 @@ class DiagnosticsConfig:
     baseline_min_samples: int = 20
     relative_slow_multiplier: float = 3.0
     email_reports: bool = False
+    extra_resource_units: dict[str, str] = field(default_factory=dict)
 
 
 def load_diagnostics_config(data: dict[str, Any]) -> DiagnosticsConfig:
@@ -144,6 +160,12 @@ def load_diagnostics_config(data: dict[str, Any]) -> DiagnosticsConfig:
         if key in options:
             options[key] = Path(options[key])
     config = DiagnosticsConfig(**options)
+    units = config.extra_resource_units
+    if (not isinstance(units, dict) or len(units) > 8
+            or any(not isinstance(key, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", key)
+                   or not isinstance(unit, str) or not re.fullmatch(r"[\w.@-]+\.service", unit)
+                   for key, unit in units.items())):
+        raise ValueError("extra_resource_units must map up to 8 target/subscope IDs to service units")
     for key, minimum, maximum in (
         ("sample_interval_seconds", 2, 60), ("resource_max_samples", 60, 3600),
         ("before_seconds", 30, 1800), ("after_seconds", 10, 600),
@@ -221,6 +243,7 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
     seen_ids = set()
     seen_urls = set()
     seen_official_endpoints = set()
+    relay_ports = set()
     for entry in raw_targets:
         target_id = _monitor_id(entry.get("id"))
         if target_id in seen_ids:
@@ -321,10 +344,43 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
                 base_url=base_url, **required,
                 health_interval_seconds=interval, failure_threshold=threshold,
             ))
-        if not core.health_url and not core.systemd_unit and not connections and not official_connections:
+        onebot_connections = []
+        raw_onebot = entry.get("onebot_connections", [])
+        if not isinstance(raw_onebot, list):
+            raise TypeError("onebot_connections must be a list")
+        for connection in raw_onebot:
+            item = OneBotConnection(**connection)
+            _monitor_id(item.id)
+            if item.id in connection_ids:
+                raise ValueError("duplicate OneBot connection ID")
+            connection_ids.add(item.id)
+            _check_http_url(item.base_url)
+            for url, schemes in ((item.base_url, {"http"}), (item.ws_url, {"ws"})):
+                parsed = urlsplit(url)
+                if (parsed.scheme not in schemes or parsed.hostname != "127.0.0.1"
+                        or parsed.username or parsed.query or parsed.fragment or not parsed.port
+                        or parsed.path not in ("", "/")):
+                    raise ValueError("OneBot endpoints must be authenticated IPv4 loopback origins")
+            if (not item.access_token or not re.fullmatch(r"QQ:[1-9][0-9]{4,19}", item.expected_user_id)
+                    or type(item.monitoring_enabled) is not bool
+                    or any(type(v) is not int or v < 1
+                           for v in (item.health_interval_seconds, item.failure_threshold))):
+                raise ValueError("invalid OneBot credentials, account or monitoring settings")
+            if (type(item.relay_port) is not int or not 1024 <= item.relay_port <= 65535
+                    or item.relay_port in relay_ports
+                    or item.relay_port in (urlsplit(item.base_url).port, urlsplit(item.ws_url).port)):
+                raise ValueError("OneBot relay ports must be unique and separate from upstream ports")
+            if item.base_url in seen_urls:
+                raise ValueError("duplicate OneBot HTTP endpoint")
+            seen_urls.add(item.base_url)
+            relay_ports.add(item.relay_port)
+            onebot_connections.append(item)
+        if (not core.health_url and not core.systemd_unit and not connections
+                and not official_connections and not onebot_connections):
             raise ValueError(f"monitoring target has nothing to check: {target_id}")
         targets.append(MonitoringTarget(
             target_id, name, core, tuple(connections), tuple(official_connections),
+            tuple(onebot_connections),
         ))
     return tuple(targets)
 
