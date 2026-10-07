@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
 from ..models import HealthSample
@@ -18,6 +19,7 @@ class HealthMonitor:
         interval_seconds: int,
         failure_threshold: int,
         initial_delay_seconds: float = 0,
+        observer: Callable[[HealthSample], Awaitable[None]] | None = None,
     ) -> None:
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be at least 1")
@@ -30,6 +32,7 @@ class HealthMonitor:
         self._consecutive_failures = 0
         self._first_failed_at = None
         self._logger = logging.getLogger(__name__)
+        self._observer = observer
 
     async def run(self, stop: asyncio.Event) -> None:
         if self._initial_delay:
@@ -49,6 +52,11 @@ class HealthMonitor:
                 pass
 
     async def process_sample(self, sample: HealthSample) -> None:
+        if self._observer:
+            try:
+                await self._observer(sample)
+            except Exception as error:  # noqa: BLE001 - optional evidence must not suppress alarms
+                self._logger.warning("diagnostic observation failed: %s", type(error).__name__)
         if sample.healthy:
             was_failing = self._consecutive_failures > 0
             self._consecutive_failures = 0

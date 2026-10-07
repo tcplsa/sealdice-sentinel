@@ -1,0 +1,35 @@
+[Unit]
+Description=Read-only resource diagnostics for SealDice Sentinel
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=sealdice-sentinel
+WorkingDirectory=/opt/sealdice-sentinel/current
+ExecStart=/opt/sealdice-sentinel/current/venv/bin/sealdice-sentinel-resources --config /etc/sealdice-sentinel/config.yaml
+Restart=on-failure
+RestartSec=10
+Nice=15
+CPUWeight=10
+IOWeight=10
+MemoryHigh=48M
+MemoryMax=96M
+MemorySwapMax=32M
+LimitNOFILE=256
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+StateDirectory=sealdice-sentinel-diagnostics
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/sealdice-sentinel-diagnostics
+
+[Install]
+WantedBy=multi-user.target

@@ -13,21 +13,50 @@ class _MilkyProbe:
         self._base_url = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {access_token}"}
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        self._stages: list[dict] = []
 
     async def _call(self, action: str, payload: dict[str, object]) -> tuple[bool, str | None]:
         url = f"{self._base_url}/api/{action}"
-        async with (
-            aiohttp.ClientSession(timeout=self._timeout) as session,
-            session.post(url, headers=self._headers, json=payload) as response,
-        ):
-            body = await response.json(content_type=None)
-            healthy = response.status == 200 and body.get("status") == "ok"
-            if healthy:
-                return True, None
-            return False, (
-                f"{action}: HTTP {response.status}, retcode={body.get('retcode')}, "
-                f"message={body.get('message')}"
-            )
+        started = time.perf_counter()
+        stage = {"action": action, "healthy": False}
+        trace = aiohttp.TraceConfig()
+        timings = {}
+
+        async def connection_start(*_):
+            timings["connection"] = time.perf_counter()
+
+        async def connection_end(*_):
+            stage["tcp_connect_ms"] = round((time.perf_counter() - timings["connection"]) * 1000, 2)
+
+        trace.on_connection_create_start.append(connection_start)
+        trace.on_connection_create_end.append(connection_end)
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=self._timeout, trace_configs=[trace]) as session,
+                session.post(url, headers=self._headers, json=payload,
+                             allow_redirects=False) as response,
+            ):
+                stage["response_headers_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                stage["http_status"] = response.status
+                body = await response.json(content_type=None)
+                if not isinstance(body, dict):
+                    raise TypeError("Milky response is not an object")
+                code = body.get("retcode")
+                stage["retcode"] = code if type(code) is int else None
+                healthy = response.status == 200 and body.get("status") == "ok"
+                stage["healthy"] = healthy
+                if healthy:
+                    return True, None
+                return False, (
+                    f"{action}: HTTP {response.status}, retcode={body.get('retcode')}, "
+                    f"message={body.get('message')}"
+                )
+        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError) as error:
+            stage["error_type"] = type(error).__name__
+            raise
+        finally:
+            stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            self._stages.append(stage)
 
 
 class MilkyProcessProbe(_MilkyProbe):
@@ -35,10 +64,11 @@ class MilkyProcessProbe(_MilkyProbe):
 
     async def health(self) -> HealthSample:
         started = time.perf_counter()
+        self._stages = []
         checked_at = datetime.now(UTC)
         try:
             healthy, reason = await self._call("get_impl_info", {})
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError) as exc:
             healthy = False
             reason = f"{type(exc).__name__}: {exc}"
         return HealthSample(
@@ -47,11 +77,12 @@ class MilkyProcessProbe(_MilkyProbe):
             checked_at=checked_at,
             latency_ms=int((time.perf_counter() - started) * 1000),
             reason=reason,
+            details={"stages": self._stages, "read_only": True},
         )
 
 
 class MilkySessionProbe(_MilkyProbe):
-    """Verify a live QQ session, including one operation that bypasses the group cache."""
+    """Read account/list APIs. Success alone cannot verify heartbeats or actual delivery."""
 
     def __init__(
         self, base_url: str, access_token: str, timeout_seconds: int = 10,
@@ -62,6 +93,7 @@ class MilkySessionProbe(_MilkyProbe):
 
     async def health(self) -> HealthSample:
         started = time.perf_counter()
+        self._stages = []
         checked_at = datetime.now(UTC)
         try:
             healthy, reason = await self._call("get_login_info", {})
@@ -72,7 +104,7 @@ class MilkySessionProbe(_MilkyProbe):
                     "get_friend_requests",
                     {"limit": 1, "is_filtered": False},
                 )
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError) as exc:
             healthy = False
             reason = f"{type(exc).__name__}: {exc}"
         return HealthSample(
@@ -81,6 +113,8 @@ class MilkySessionProbe(_MilkyProbe):
             checked_at=checked_at,
             latency_ms=int((time.perf_counter() - started) * 1000),
             reason=reason,
+            details={"stages": self._stages, "read_only": True,
+                     "delivery_verified": False},
         )
 
 

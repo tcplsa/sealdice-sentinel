@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from collections import deque
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from urllib.parse import urlsplit
@@ -51,7 +52,7 @@ _CONSOLE_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _CHAT_PREFIX = re.compile(
-    r"^(?:收到(?:群|个人|私聊|私信|好友|用户)|"
+    r"^(?:收到(?:群|个人|私聊|私信|好友|用户|<)|发给\((?:群|帐号|账号)|"
     r"(?:发给|发送给|发往|发送到|回复|向)(?:群|个人|私聊|私信|好友|用户)|"
     r"发送(?:群|私聊|私信|好友)?消息)",
 )
@@ -120,6 +121,10 @@ class SealDiceJournalMonitor:
         incidents: IncidentService,
         failure_threshold: int = 3,
         failure_window_seconds: int = 120,
+        observer: Callable[[str, datetime], Awaitable[None]] | None = None,
+        connection_incidents: dict[int, IncidentService] | None = None,
+        reply_incidents: dict[str, IncidentService] | None = None,
+        reply_parser: Callable[[str], dict | None] | None = None,
     ) -> None:
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be at least 1")
@@ -131,9 +136,32 @@ class SealDiceJournalMonitor:
         self._failure_window = timedelta(seconds=failure_window_seconds)
         self._failures: deque[datetime] = deque()
         self._logger = logging.getLogger(__name__)
+        self._observer = observer
+        self._connection_incidents = connection_incidents if connection_incidents is not None else {}
+        self._reply_incidents = reply_incidents if reply_incidents is not None else {}
+        self._reply_parser = reply_parser
+        self._connection_failures: dict[int, deque] = {}
 
     async def process_line(self, line: str, occurred_at: datetime | None = None) -> None:
         occurred_at = occurred_at or datetime.now(UTC)
+        if self._observer:
+            try:
+                await self._observer(line, occurred_at)
+            except Exception as error:  # noqa: BLE001 - optional evidence must not suppress alarms
+                self._logger.warning("diagnostic log observation failed: %s", type(error).__name__)
+        if self._reply_parser:
+            timing = self._reply_parser(line)
+            if timing and timing["event"] == "reply_api_completed":
+                incidents = self._reply_incidents.get(timing["self_id"])
+                if incidents:
+                    for port, owner in self._connection_incidents.items():
+                        if owner is incidents:
+                            self._connection_failures.pop(port, None)
+                    await incidents.report_healthy(
+                        ServiceName.SEALDICE_LINK, occurred_at,
+                        source=f"journal:{self._systemd_unit}:reply-api", record_sample=False,
+                        evidence="同账号的发送 API 成功回调已观测；不能确认最终送达。",
+                    )
         signal = classify_log_line(line)
         source = f"journal:{self._systemd_unit}"
         if signal is LogSignal.IGNORE:
@@ -148,21 +176,29 @@ class SealDiceJournalMonitor:
             )
             return
 
+        incidents, failures = self._incidents, self._failures
+        message = _system_message(line)
+        match = _SEND_ERROR.fullmatch(message) if _milky_send_failed(message) else None
+        if match:
+            port = urlsplit(match[2]).port
+            if port in self._connection_incidents:
+                incidents = self._connection_incidents[port]
+                failures = self._connection_failures.setdefault(port, deque())
         cutoff = occurred_at - self._failure_window
-        while self._failures and self._failures[0] < cutoff:
-            self._failures.popleft()
-        self._failures.append(occurred_at)
+        while failures and failures[0] < cutoff:
+            failures.popleft()
+        failures.append(occurred_at)
         sample = HealthSample(
             service=ServiceName.SEALDICE_LINK,
             healthy=False,
             checked_at=occurred_at,
             reason=line.strip()[:500],
-            first_failed_at=self._failures[0],
+            first_failed_at=failures[0],
         )
-        if signal is LogSignal.DEFINITIVE_FAILURE or len(self._failures) >= self._failure_threshold:
-            await self._incidents.report_down(sample, source=source)
+        if signal is LogSignal.DEFINITIVE_FAILURE or len(failures) >= self._failure_threshold:
+            await incidents.report_down(sample, source=source)
         else:
-            await self._incidents.record_sample(sample)
+            await incidents.record_sample(sample)
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():

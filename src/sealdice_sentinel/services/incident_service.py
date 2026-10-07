@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..models import HealthSample, Notification, ServiceName, Severity
@@ -14,6 +15,7 @@ SERVICE_LABELS = {
     ServiceName.SEALDICE: "SealDice",
     ServiceName.SEALDICE_LINK: "SealDice-Milky 通信链路",
     ServiceName.SMTP: "SMTP",
+    ServiceName.RESOURCES: "服务器资源压力",
 }
 
 
@@ -40,12 +42,18 @@ class IncidentService:
         timezone: str = "UTC",
         instance_id: str = "default",
         instance_name: str = "",
+        diagnostic_context: Callable[[str], Awaitable[str]] | None = None,
+        email_delay_seconds: int = 0,
+        notify_failures: bool = True,
     ) -> None:
         self._repository = repository
         self._notifications = notifications
         self._timezone = ZoneInfo(timezone)
         self._instance_id = instance_id
         self._instance_name = instance_name
+        self._diagnostic_context = diagnostic_context
+        self._email_delay_seconds = email_delay_seconds
+        self._notify_failures = notify_failures
 
     def _identity(self) -> str:
         if not self._instance_name:
@@ -68,7 +76,10 @@ class IncidentService:
         incident = await self._repository.open_incident(sample, source)
         if incident is None:
             return False
+        if not self._notify_failures:
+            return True
         label = self._label(incident.service)
+        context = await self._diagnostic_context(self._instance_id) if self._diagnostic_context else ""
         await self._notifications.publish(
             Notification(
                 dedup_key=f"incident-open:{incident.incident_id}",
@@ -86,7 +97,10 @@ class IncidentService:
                     f"检测证据／触发日志：{incident.reason}\n"
                     "时间说明：观测时间不是精确断线时刻，轮询及连续失败阈值会造成检测延迟。\n"
                     "处理建议：持续异常时检查对应服务；Sentinel 本次未执行重启或重新登录。"
+                    + context
                 ),
+                not_before=incident.started_at + timedelta(seconds=self._email_delay_seconds)
+                if self._email_delay_seconds else None,
             )
         )
         return True
@@ -115,6 +129,9 @@ class IncidentService:
         )
         if incident is None:
             return False
+        if self._email_delay_seconds:
+            await self._repository.mark_suppressed(f"incident-open:{incident.incident_id}",
+                                                   "recovered before delayed notification")
         label = self._label(incident.service)
         first_failed = incident.first_failed_at or incident.started_at
         duration = max(0, int((checked_at - first_failed).total_seconds()))

@@ -79,12 +79,39 @@ notifications:
   owner_qq: null
   dedup_window_seconds: 300
   daily_report_time: "08:00"
+  email_policy: all # critical_only keeps only actionable severe alerts; disabled mutes email
+  incident_email_delay_seconds: 0 # e.g. 120: withdraw if recovered before mail is due
 
 token_usage:
   enabled: true
   daily_limit: 1000000
   alert_thresholds: [0.5, 0.8, 0.95]
   retain_detail_days: 180
+
+# Optional resource/evidence diagnostics. Enable the separate read-only root sampler
+# sealdice-sentinel-resources.service after enabling this section.
+diagnostics:
+  enabled: false
+  resource_database_path: /var/lib/sealdice-sentinel-diagnostics/resources.db
+  database_path: /var/lib/sealdice-sentinel/diagnostics.db
+  sample_interval_seconds: 5
+  resource_max_samples: 720 # rolling hour; resource DB has a 64 MiB page limit
+  before_seconds: 300
+  after_seconds: 120
+  capture_cooldown_seconds: 300
+  max_reports: 100
+  report_retention_days: 7
+  network_capacity_mbps: null # set actual cloud bandwidth; null keeps percentage unknown
+  network_check_url: null # optional HTTPS origin, no sign token/path/query; reachability only
+  network_check_interval_seconds: 120
+  resource_alerts_enabled: true
+  slow_reply_threshold_ms: 3000
+  slow_other_reply_threshold_ms: 10000
+  slow_chat_reply_threshold_ms: 30000
+  slow_probe_threshold_ms: 1000
+  baseline_min_samples: 20
+  relative_slow_multiplier: 3.0
+  email_reports: false # normal/slow replies and diagnostic reports stay local by default
 
 updates:
   enabled: true

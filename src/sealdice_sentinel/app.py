@@ -5,7 +5,9 @@ import asyncio
 import logging
 import signal
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .adapters.health import (
     MilkyProcessProbe,
@@ -18,12 +20,14 @@ from .adapters.smtp import SmtpMailer
 from .adapters.sqlite import SQLiteStore
 from .adapters.webhook import MilkyWebhookServer
 from .config import AppConfig, load_config
+from .services.diagnostics import DiagnosticsService
 from .services.event_processor import EventProcessor
 from .services.health_monitor import HealthMonitor
 from .services.incident_service import IncidentService
 from .services.mail_worker import MailWorker
 from .services.notification_service import NotificationService
 from .services.reconciliation import ReconciliationService
+from .services.reply_latency import parse_reply_observation
 from .services.sealdice_log_monitor import SealDiceJournalMonitor
 from .services.token_usage_reporter import DailyTokenUsageReporter
 
@@ -58,34 +62,57 @@ def build_monitors(
     store: SQLiteStore,
     notifications: NotificationService,
     primary_incidents: IncidentService,
+    diagnostics: DiagnosticsService | None = None,
 ) -> tuple[list[HealthMonitor], list[tuple[str, SealDiceJournalMonitor]]]:
     monitors = []
     journals = []
     # Stagger live requests across targets instead of starting them in one burst.
     for target in config.monitoring_targets:
         incidents = primary_incidents if target.id == "default" else IncidentService(
-            store, notifications, config.timezone, target.id, target.name
+            store, notifications, config.timezone, target.id, target.name,
+            diagnostic_context=diagnostics.incident_context if diagnostics else None,
+            email_delay_seconds=config.notifications.incident_email_delay_seconds,
         )
         core = target.sealdice
+        port_incidents = {}
+        reply_incidents = {}
         if core.health_url:
             monitors.append(HealthMonitor(
                 name=f"{target.id}:sealdice-http", probe=SealDiceHttpProbe(core.health_url),
                 incidents=incidents, interval_seconds=core.health_interval_seconds,
                 failure_threshold=core.failure_threshold,
                 initial_delay_seconds=min(len(monitors) * 2, 20),
+                observer=partial(diagnostics.record_health, target.id, "sealdice-http")
+                if diagnostics else None,
             ))
         if core.journal_monitor_enabled and core.systemd_unit:
+            generic_incidents = IncidentService(
+                store, notifications, config.timezone, f"{target.id}/link-general",
+                target.name + "（未匹配账号的通信日志）",
+                diagnostic_context=partial(lambda service, scope, _: service.incident_context(scope),
+                                           diagnostics, target.id) if diagnostics else None,
+                email_delay_seconds=config.notifications.incident_email_delay_seconds,
+                notify_failures=config.notifications.email_policy == "all",
+            )
             journals.append((target.id, SealDiceJournalMonitor(
-                systemd_unit=core.systemd_unit, incidents=incidents,
+                systemd_unit=core.systemd_unit, incidents=generic_incidents,
                 failure_threshold=core.log_failure_threshold,
                 failure_window_seconds=core.log_failure_window_seconds,
+                observer=partial(diagnostics.record_log, target.id) if diagnostics else None,
+                connection_incidents=port_incidents, reply_incidents=reply_incidents,
+                reply_parser=parse_reply_observation,
             )))
         for connection in target.milky_connections:
             scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
             connection_incidents = incidents if connection.id == "main" else IncidentService(
                 store, notifications, config.timezone, scope,
                 f"{target.name} / {connection.name}",
+                diagnostic_context=diagnostics.incident_context if diagnostics else None,
+                email_delay_seconds=config.notifications.incident_email_delay_seconds,
             )
+            port_incidents[urlsplit(connection.base_url).port] = connection_incidents
+            if connection.expected_user_id:
+                reply_incidents[connection.expected_user_id] = connection_incidents
             for name, probe in (
                 ("milky-process", MilkyProcessProbe), ("qq-session", MilkySessionProbe),
             ):
@@ -100,13 +127,17 @@ def build_monitors(
                     interval_seconds=connection.health_interval_seconds,
                     failure_threshold=connection.failure_threshold,
                     initial_delay_seconds=min(len(monitors) * 2, 20),
+                    observer=partial(diagnostics.record_health, scope, name) if diagnostics else None,
                 ))
         for connection in target.official_connections:
             scope = target.id if connection.id == "main" else f"{target.id}/{connection.id}"
             official_incidents = IncidentService(
                 store, notifications, config.timezone, scope,
                 f"{target.name} / {connection.name}（官方连接状态）",
+                diagnostic_context=diagnostics.incident_context if diagnostics else None,
+                email_delay_seconds=config.notifications.incident_email_delay_seconds,
             )
+            reply_incidents[connection.expected_user_id] = official_incidents
             monitors.append(HealthMonitor(
                 name=f"{scope}:official-state",
                 probe=OfficialQQStateProbe(
@@ -116,6 +147,8 @@ def build_monitors(
                 incidents=official_incidents, interval_seconds=connection.health_interval_seconds,
                 failure_threshold=connection.failure_threshold,
                 initial_delay_seconds=min(len(monitors) * 2, 20),
+                observer=partial(diagnostics.record_health, scope, "official-state")
+                if diagnostics else None,
             ))
     return monitors, journals
 
@@ -139,10 +172,17 @@ async def run(config_path: Path) -> None:
         retry_max_seconds=config.smtp.retry_max_seconds,
     )
     await store.initialize()
-    notifications = NotificationService(store, owner_qq=config.notifications.owner_qq)
+    notifications = NotificationService(store, owner_qq=config.notifications.owner_qq,
+                                        email_policy=config.notifications.email_policy)
+    diagnostics = DiagnosticsService(config.diagnostics, config.monitoring_targets, notifications) \
+        if config.diagnostics.enabled else None
+    if diagnostics:
+        await diagnostics.initialize()
     primary = next(target for target in config.monitoring_targets if target.id == "default")
     incidents = IncidentService(
-        store, notifications, timezone=config.timezone, instance_name=primary.name
+        store, notifications, timezone=config.timezone, instance_name=primary.name,
+        diagnostic_context=diagnostics.incident_context if diagnostics else None,
+        email_delay_seconds=config.notifications.incident_email_delay_seconds,
     )
     processor = EventProcessor(notifications, incidents)
     webhook = MilkyWebhookServer(
@@ -159,6 +199,7 @@ async def run(config_path: Path) -> None:
         store,
         SmtpMailer(config.smtp),
         qq_sender=MilkyQqNotifier(milky_gateway),
+        email_policy=config.notifications.email_policy,
     )
     reconciliation = ReconciliationService(
         gateway=milky_gateway,
@@ -170,7 +211,7 @@ async def run(config_path: Path) -> None:
         notifications=notifications,
         interval_seconds=config.milky.reconciliation_interval_seconds,
     )
-    monitors, journals = build_monitors(config, store, notifications, incidents)
+    monitors, journals = build_monitors(config, store, notifications, incidents, diagnostics)
 
     await webhook.start()
     tasks = [
@@ -196,6 +237,10 @@ async def run(config_path: Path) -> None:
                 name="supervisor-daily-token-usage-reporter",
             )
         )
+    if diagnostics:
+        tasks.append(asyncio.create_task(
+            supervise("diagnostics", diagnostics.run, stop), name="supervisor-diagnostics",
+        ))
     for target_id, journal_monitor in journals:
         tasks.append(
             asyncio.create_task(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 from ..models import Notification, NotificationChannel, Severity
 from ..ports import NotificationOutbox, NotificationSender
@@ -14,12 +15,19 @@ class MailWorker:
         mailer: NotificationSender,
         qq_sender: NotificationSender | None = None,
         poll_interval_seconds: int = 5,
+        email_policy: str = "all",
     ) -> None:
         self._outbox = outbox
         self._mailer = mailer
         self._qq_sender = qq_sender
         self._poll_interval_seconds = poll_interval_seconds
         self._logger = logging.getLogger(__name__)
+        self._email_policy = email_policy
+
+    def _email_allowed(self, notification: Notification) -> bool:
+        return self._email_policy == "all" or (
+            self._email_policy == "critical_only" and notification.severity is Severity.CRITICAL
+        )
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -31,6 +39,12 @@ class MailWorker:
 
     async def _drain_once(self) -> None:
         for notification in await self._outbox.pending():
+            if (notification.channel is NotificationChannel.EMAIL
+                    and not self._email_allowed(notification)):
+                await self._outbox.mark_suppressed(notification.dedup_key, "email policy")
+                continue
+            if notification.not_before and notification.not_before > datetime.now(UTC):
+                continue
             try:
                 sender = self._mailer
                 if notification.channel is NotificationChannel.QQ:
@@ -58,6 +72,8 @@ class MailWorker:
         notification: Notification,
         error: Exception,
     ) -> None:
+        if self._email_policy != "all":
+            return
         await self._outbox.enqueue(
             Notification(
                 dedup_key=f"qq-fallback:{notification.dedup_key}",

@@ -5,6 +5,7 @@ SERVICE_USER="sealdice-sentinel"
 INSTALL_ROOT="/opt/sealdice-sentinel"
 CONFIG_ROOT="/etc/sealdice-sentinel"
 STATE_ROOT="/var/lib/sealdice-sentinel"
+RESOURCE_STATE_ROOT="/var/lib/sealdice-sentinel-diagnostics"
 SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${SCRIPT_ROOT}"
 
@@ -34,6 +35,7 @@ fi
 install -d -o root -g root -m 0755 "${INSTALL_ROOT}" "${INSTALL_ROOT}/releases"
 install -d -o root -g "${SERVICE_USER}" -m 0750 "${CONFIG_ROOT}"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${STATE_ROOT}"
+install -d -o root -g "${SERVICE_USER}" -m 0750 "${RESOURCE_STATE_ROOT}"
 install -d -o root -g root -m 0755 "${RELEASE_ROOT}"
 
 python3 -m venv "${RELEASE_ROOT}/venv"
@@ -72,6 +74,8 @@ install -o root -g root -m 0644 "${SCRIPT_ROOT}/systemd/sealdice-sentinel-update
   /etc/systemd/system/sealdice-sentinel-updater.service
 install -o root -g root -m 0644 "${SCRIPT_ROOT}/systemd/sealdice-sentinel-updater.timer" \
   /etc/systemd/system/sealdice-sentinel-updater.timer
+install -o root -g root -m 0644 "${SCRIPT_ROOT}/systemd/sealdice-sentinel-resources.service" \
+  /etc/systemd/system/sealdice-sentinel-resources.service
 
 systemctl daemon-reload
 systemctl enable sealdice-sentinel.service sealdice-sentinel-updater.timer
@@ -80,3 +84,4 @@ echo "Installed SealDice Sentinel ${PROJECT_VERSION}."
 echo "Next: edit ${CONFIG_ROOT}/config.yaml and ${CONFIG_ROOT}/secrets.env, then run:"
 echo "  sudo systemctl start sealdice-sentinel"
 echo "  sudo systemctl start sealdice-sentinel-updater.timer"
+echo "Optional diagnostics: enable diagnostics in config.yaml, then enable --now sealdice-sentinel-resources.service."

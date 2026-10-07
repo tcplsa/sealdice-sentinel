@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hmac
 import html
 import json
@@ -25,7 +26,9 @@ import yaml
 from aiohttp import web
 
 from . import __version__
-from .config import load_monitoring_targets
+from .adapters.diagnostic_store import DiagnosticStore
+from .config import load_diagnostics_config, load_monitoring_targets
+from .diagnostic_view import load_dashboard, render_diagnostics, render_report
 
 
 @dataclass(slots=True)
@@ -915,6 +918,7 @@ def _render_page(
   <div class="nav-title">监控台</div>
   <a class="nav-link active" href="#overview"><span class="nav-icon">⌂</span>配置首页</a>
   <a class="nav-link" href="#monitoring"><span class="nav-icon">◎</span>监控范围</a>
+  <a class="nav-link" href="#diagnostics"><span class="nav-icon">◷</span>运行诊断</a>
   <a class="nav-link" href="#connections"><span class="nav-icon">⌁</span>QQ 连接</a>
   <a class="nav-link" href="#milky-settings"><span class="nav-icon">◇</span>Milky 设置</a>
   <a class="nav-link" href="#mail-settings"><span class="nav-icon">✉</span>邮件通知</a>
@@ -929,6 +933,7 @@ def _render_page(
     <div class="pill">安全会话已启用</div></header>
   {status_html}
   {_render_monitoring_targets(settings)}
+  {render_diagnostics(settings)}
   {usage_html}
   <section class="card notice" id="discovery">
     <div class="section-heading"><div><h2>定位 SealDice</h2>
@@ -1187,6 +1192,26 @@ def create_web_app(
         set_csrf_cookie(response)
         return response
 
+    async def diagnostic_data(request: web.Request) -> web.Response:
+        settings = _load_settings(default_config_path)
+        return web.json_response(await asyncio.to_thread(load_dashboard, settings))
+
+    async def diagnostic_report(request: web.Request) -> web.Response:
+        identifier = request.match_info["identifier"]
+        if not re.fullmatch(r"[0-9a-f]{32}", identifier):
+            raise web.HTTPNotFound()
+        config = load_diagnostics_config(_load_settings(default_config_path))
+        if not config.enabled or not config.database_path.is_file():
+            raise web.HTTPNotFound()
+        report = await asyncio.to_thread(DiagnosticStore(config.database_path).report, identifier)
+        if report is None:
+            raise web.HTTPNotFound()
+        if request.path.endswith("/view"):
+            return web.Response(text=render_report(report), content_type="text/html")
+        return web.json_response(report, headers={
+            "Content-Disposition": f'attachment; filename="diagnostic-{identifier}.json"',
+        })
+
     async def submit(request: web.Request) -> web.Response:
         form = await request.post()
         if not valid_csrf(request, form):
@@ -1260,6 +1285,9 @@ def create_web_app(
     app.router.add_post("/login", login)
     app.router.add_get("/", show_page)
     app.router.add_post("/", submit)
+    app.router.add_get("/diagnostics", diagnostic_data)
+    app.router.add_get("/diagnostics/reports/{identifier}", diagnostic_report)
+    app.router.add_get("/diagnostics/reports/{identifier}/view", diagnostic_report)
     return app
 
 

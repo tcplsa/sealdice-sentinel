@@ -300,8 +300,8 @@ class SQLiteStore:
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO notification_outbox(
-                    dedup_key, severity, subject, body, channel, recipient, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    dedup_key, severity, subject, body, channel, recipient, created_at, next_attempt_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     notification.dedup_key,
@@ -311,6 +311,7 @@ class SQLiteStore:
                     notification.channel.value,
                     notification.recipient,
                     notification.created_at.isoformat(),
+                    notification.not_before.timestamp() if notification.not_before else 0,
                 ),
             )
             return cursor.rowcount == 1
@@ -346,6 +347,14 @@ class SQLiteStore:
 
     async def mark_sent(self, dedup_key: str) -> None:
         await asyncio.to_thread(self._mark_sent_sync, dedup_key)
+
+    async def mark_suppressed(self, dedup_key: str, reason: str) -> None:
+        await asyncio.to_thread(self._mark_suppressed_sync, dedup_key, reason)
+
+    def _mark_suppressed_sync(self, dedup_key: str, reason: str) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE notification_outbox SET status='suppressed', last_error=? "
+                       "WHERE dedup_key=? AND status='pending'", (reason[:500], dedup_key))
 
     def _mark_sent_sync(self, dedup_key: str) -> None:
         with self._connect() as db:

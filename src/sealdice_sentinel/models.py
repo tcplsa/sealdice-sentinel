@@ -12,6 +12,7 @@ class ServiceName(StrEnum):
     SEALDICE = "sealdice"
     SEALDICE_LINK = "sealdice_link"
     SMTP = "smtp"
+    RESOURCES = "resources"
 
 
 class HealthState(StrEnum):
@@ -52,6 +53,7 @@ class HealthSample:
     reason: str | None = None
     first_failed_at: datetime | None = None
     instance_id: str = "default"
+    details: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(slots=True, frozen=True)
@@ -63,6 +65,7 @@ class Notification:
     channel: NotificationChannel = NotificationChannel.EMAIL
     recipient: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    not_before: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)

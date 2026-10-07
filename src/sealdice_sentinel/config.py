@@ -22,6 +22,7 @@ class MilkyConfig:
     failure_threshold: int = 3
     reconciliation_interval_seconds: int = 300
     probe_friend_requests: bool = True
+    expected_user_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -44,6 +45,7 @@ class MonitoringConnection:
     health_interval_seconds: int = 30
     failure_threshold: int = 3
     probe_friend_requests: bool = True
+    expected_user_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -84,6 +86,8 @@ class SmtpConfig:
 class NotificationConfig:
     owner_qq: int | None = None
     daily_report_time: str = "08:00"
+    email_policy: str = "all"
+    incident_email_delay_seconds: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -107,6 +111,71 @@ class UpdateConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class DiagnosticsConfig:
+    enabled: bool = False
+    resource_database_path: Path = Path("/var/lib/sealdice-sentinel-diagnostics/resources.db")
+    database_path: Path = Path("/var/lib/sealdice-sentinel/diagnostics.db")
+    sample_interval_seconds: int = 5
+    resource_max_samples: int = 720
+    before_seconds: int = 300
+    after_seconds: int = 120
+    capture_cooldown_seconds: int = 300
+    max_reports: int = 100
+    report_retention_days: int = 7
+    network_capacity_mbps: float | None = None
+    network_check_url: str | None = None
+    network_check_interval_seconds: int = 120
+    resource_alerts_enabled: bool = True
+    slow_reply_threshold_ms: int = 3000
+    slow_other_reply_threshold_ms: int = 10000
+    slow_chat_reply_threshold_ms: int = 30000
+    slow_probe_threshold_ms: int = 1000
+    baseline_min_samples: int = 20
+    relative_slow_multiplier: float = 3.0
+    email_reports: bool = False
+
+
+def load_diagnostics_config(data: dict[str, Any]) -> DiagnosticsConfig:
+    raw = data.get("diagnostics", {})
+    if not isinstance(raw, dict):
+        raise TypeError("diagnostics must be an object")
+    options = dict(raw)
+    for key in ("resource_database_path", "database_path"):
+        if key in options:
+            options[key] = Path(options[key])
+    config = DiagnosticsConfig(**options)
+    for key, minimum, maximum in (
+        ("sample_interval_seconds", 2, 60), ("resource_max_samples", 60, 3600),
+        ("before_seconds", 30, 1800), ("after_seconds", 10, 600),
+        ("capture_cooldown_seconds", 60, 3600), ("max_reports", 1, 300),
+        ("report_retention_days", 1, 30), ("network_check_interval_seconds", 60, 3600),
+        ("slow_reply_threshold_ms", 500, 60000), ("slow_other_reply_threshold_ms", 500, 120000),
+        ("slow_chat_reply_threshold_ms", 1000, 120000),
+        ("slow_probe_threshold_ms", 200, 30000), ("baseline_min_samples", 5, 200),
+    ):
+        value = getattr(config, key)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"diagnostics.{key} must be between {minimum} and {maximum}")
+    for key in ("enabled", "resource_alerts_enabled", "email_reports"):
+        if type(getattr(config, key)) is not bool:
+            raise TypeError(f"diagnostics.{key} must be true or false")
+    capacity = config.network_capacity_mbps
+    if capacity is not None and (type(capacity) not in (int, float) or not 0 < capacity <= 100000):
+        raise ValueError("diagnostics.network_capacity_mbps must be positive or null")
+    if config.network_check_url:
+        _check_http_url(config.network_check_url)
+        parsed = urlsplit(config.network_check_url)
+        if parsed.scheme != "https" or parsed.path not in ("", "/"):
+            raise ValueError("diagnostics.network_check_url must be a public HTTPS origin")
+    if config.resource_database_path == config.database_path:
+        raise ValueError("diagnostics databases must use separate paths")
+    if (type(config.relative_slow_multiplier) not in (int, float)
+            or not 1.5 <= config.relative_slow_multiplier <= 10):
+        raise ValueError("diagnostics.relative_slow_multiplier must be between 1.5 and 10")
+    return config
+
+
+@dataclass(slots=True, frozen=True)
 class AppConfig:
     timezone: str
     database_path: Path
@@ -119,6 +188,7 @@ class AppConfig:
     updates: UpdateConfig
     raw: dict[str, Any]
     monitoring_targets: tuple[MonitoringTarget, ...] = ()
+    diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
 
 
 def _monitor_id(value: Any) -> str:
@@ -182,6 +252,7 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
                 "id": "main", "name": "主 QQ 连接", "base_url": milky.base_url,
                 "access_token": milky.access_token,
                 "probe_friend_requests": milky.probe_friend_requests,
+                "expected_user_id": milky.expected_user_id,
             }, *raw_connections]
         connections = []
         connection_ids = set()
@@ -204,11 +275,16 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
             auxiliary = connection.get("probe_friend_requests", True)
             if not isinstance(auxiliary, bool):
                 raise TypeError("probe_friend_requests must be true or false")
+            identity = connection.get("expected_user_id")
+            if identity is not None and (not isinstance(identity, str)
+                                         or not re.fullmatch(r"QQ:[1-9][0-9]{4,19}", identity)):
+                raise ValueError("Milky expected_user_id must be a qualified QQ account ID")
             connections.append(MonitoringConnection(
                 id=connection_id, name=str(connection.get("name", connection_id)),
                 base_url=base_url, access_token=str(connection.get("access_token", "")),
                 health_interval_seconds=interval, failure_threshold=threshold,
                 probe_friend_requests=auxiliary,
+                expected_user_id=identity,
             ))
         raw_official = entry.get("official_connections", [])
         if not isinstance(raw_official, list):
@@ -273,6 +349,12 @@ def load_config(path: Path) -> AppConfig:
     daily_report_time = str(notifications.get("daily_report_time", "08:00"))
     if not _valid_clock_time(daily_report_time):
         raise ValueError("notifications.daily_report_time must use HH:MM format")
+    email_policy = notifications.get("email_policy", "all")
+    if email_policy not in {"all", "critical_only", "disabled"}:
+        raise ValueError("notifications.email_policy must be all, critical_only or disabled")
+    email_delay = notifications.get("incident_email_delay_seconds", 0)
+    if type(email_delay) is not int or not 0 <= email_delay <= 1800:
+        raise ValueError("notifications.incident_email_delay_seconds must be 0-1800")
 
     return AppConfig(
         timezone=app["timezone"],
@@ -294,6 +376,7 @@ def load_config(path: Path) -> AppConfig:
         notifications=NotificationConfig(
             owner_qq=owner_qq,
             daily_report_time=daily_report_time,
+            email_policy=email_policy, incident_email_delay_seconds=email_delay,
         ),
         token_usage=TokenUsageConfig(
             enabled=bool(token_usage.get("enabled", True)),
@@ -313,6 +396,7 @@ def load_config(path: Path) -> AppConfig:
         ),
         raw=data,
         monitoring_targets=load_monitoring_targets(data),
+        diagnostics=load_diagnostics_config(data),
     )
 
 
