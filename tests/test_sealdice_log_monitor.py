@@ -21,6 +21,56 @@ def test_log_classifier_is_conservative() -> None:
     assert classify_log_line("ordinary dice command") is LogSignal.IGNORE
 
 
+@pytest.mark.parametrize("kind, destination", [("group", "QQ-Group:1087654086"),
+                                               ("private", "QQ:1234567")])
+@pytest.mark.parametrize("envelope", ["plain", "console", "json", "chat"])
+def test_real_milky_send_timeout_is_detected_but_quoted_chat_is_ignored(kind, destination, envelope):
+    message = (f'Failed to send {kind} message to {destination}: Post '
+               f'"http://127.0.0.1:36045/api/send_{kind}_message": '
+               'context deadline exceeded (Client.Timeout exceeded while awaiting headers)')
+    if envelope == "console":
+        message = "2026-10-07T10:08:51.854+0800 ERROR adapter dice/platform_adapter_milky.go:946 " + message
+    elif envelope == "json":
+        message = json.dumps({"msg": message})
+    elif envelope == "chat":
+        message = "收到群(QQ-Group:1)内<用户>(QQ:2)的消息: " + message
+    assert classify_log_line(message) is (
+        LogSignal.IGNORE if envelope == "chat" else LogSignal.FAILURE
+    )
+
+
+@pytest.mark.parametrize("url, error", [
+    ("http://example.com/api/send_group_message", "context deadline exceeded"),
+    ("http://127.0.0.1:36045/api/get_group_list", "context deadline exceeded"),
+    ("http://127.0.0.1:36045/api/send_private_message", "context deadline exceeded"),
+    ("http://127.0.0.1:36045/api/send_group_message?token=secret", "context deadline exceeded"),
+    ("http://127.0.0.1:36045/api/send_group_message", "unsupported message element"),
+])
+def test_unrelated_send_error_shapes_do_not_trigger_connection_incidents(url, error):
+    message = f'Failed to send group message to QQ-Group:1: Post "{url}": {error}'
+    assert classify_log_line(message) is LogSignal.IGNORE
+
+
+def test_three_actual_send_timeouts_open_one_incident_with_original_evidence(tmp_path):
+    async def scenario():
+        store = SQLiteStore(tmp_path / "send.db")
+        await store.initialize()
+        monitor = SealDiceJournalMonitor(
+            "sealdice3.service", IncidentService(store, NotificationService(store)),
+        )
+        message = ('Failed to send group message to QQ-Group:1087654086: Post '
+                   '"http://127.0.0.1:36045/api/send_group_message": context deadline exceeded')
+        started = datetime.now(UTC)
+        await monitor.process_line(message, started)
+        await monitor.process_line(message, started + timedelta(seconds=10))
+        assert await store.pending() == []
+        await monitor.process_line(message, started + timedelta(seconds=20))
+        pending = await store.pending()
+        assert len(pending) == 1
+        assert message in pending[0].body
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("message", [
     "收到群(QQ-Group:864172382)内<通天之塔>(QQ:709917580)的消息: 麻了bQQ给我bot自动下线了",
     "收到群(QQ-Group:1)内<Yogurt disconnected>(QQ:2)的消息: 普通聊天",

@@ -52,12 +52,21 @@ def sync_endpoint(
     yogurt_config: Path, sentinel_config: Path,
     target_id: str | None = None, connection_id: str | None = None,
     endpoint_id: str | None = None,
+    qq_id: int | None = None,
 ) -> bool:
-    if endpoint_id is not None:
+    if endpoint_id is not None and qq_id is not None:
+        raise ValueError("Select an endpoint ID or a QQ account, not both")
+    if qq_id is not None and (type(qq_id) is not int or qq_id <= 0):
+        raise ValueError("QQ account IDs must be positive integers")
+    if endpoint_id is not None or qq_id is not None:
         document = yaml.safe_load(yogurt_config.read_text(encoding="utf-8"))
         endpoints = [item for item in document.get("imSession", {}).get("endPoints", [])
-                     if item.get("baseInfo", {}).get("id") == endpoint_id
-                     and item.get("baseInfo", {}).get("enable")]
+                     if item.get("baseInfo", {}).get("enable") is True
+                     and ((qq_id is None and item.get("baseInfo", {}).get("id") == endpoint_id)
+                          or (qq_id is not None
+                              and item.get("baseInfo", {}).get("userId") == f"QQ:{qq_id}"
+                              and item.get("baseInfo", {}).get("platform") == "QQ"
+                              and item.get("baseInfo", {}).get("protocolType") == "milky"))]
         if len(endpoints) != 1:
             raise ValueError("Selected enabled Milky endpoint was not found or is ambiguous")
         adapter = endpoints[0].get("adapter", {})
@@ -68,6 +77,7 @@ def sync_endpoint(
             raise ValueError("Invalid Milky endpoint URL")
         if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Only loopback Milky endpoints may be synchronized")
+        _ = parsed.port
     else:
         base_url, token = _yogurt_endpoint(yogurt_config)
     with _config_lock(sentinel_config):
@@ -134,21 +144,23 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--yogurt-config", type=Path)
     source.add_argument("--sealdice-config", type=Path)
-    parser.add_argument("--endpoint-id")
+    selector = parser.add_mutually_exclusive_group()
+    selector.add_argument("--endpoint-id")
+    selector.add_argument("--qq-id", type=int)
     parser.add_argument("--target-id")
     parser.add_argument("--connection-id")
     parser.add_argument("--sentinel-config", type=Path, required=True)
     parser.add_argument("--service", default="sealdice-sentinel.service")
     args = parser.parse_args()
-    if args.sealdice_config and not args.endpoint_id:
-        parser.error("--sealdice-config requires --endpoint-id")
-    if args.yogurt_config and args.endpoint_id:
-        parser.error("--endpoint-id requires --sealdice-config")
+    if args.sealdice_config and args.endpoint_id is None and args.qq_id is None:
+        parser.error("--sealdice-config requires --endpoint-id or --qq-id")
+    if args.yogurt_config and (args.endpoint_id is not None or args.qq_id is not None):
+        parser.error("--endpoint-id and --qq-id require --sealdice-config")
     if args.connection_id and not args.target_id:
         parser.error("--connection-id requires --target-id")
     if sync_endpoint(
         args.yogurt_config or args.sealdice_config, args.sentinel_config,
-        args.target_id, args.connection_id, args.endpoint_id,
+        args.target_id, args.connection_id, args.endpoint_id, args.qq_id,
     ):
         subprocess.run(
             ["systemctl", "try-restart", "--no-block", args.service], check=True

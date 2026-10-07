@@ -7,6 +7,7 @@ import re
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from ..models import HealthSample, ServiceName
 from .incident_service import IncidentService
@@ -54,6 +55,29 @@ _CHAT_PREFIX = re.compile(
     r"(?:发给|发送给|发往|发送到|回复|向)(?:群|个人|私聊|私信|好友|用户)|"
     r"发送(?:群|私聊|私信|好友)?消息)",
 )
+_SEND_ERROR = re.compile(
+    r'^Failed to send (group|private)(?: forward)? message to QQ(?:-Group)?:\d+: '
+    r'Post "([^"\s]+)": (.+)$', re.IGNORECASE,
+)
+_TRANSPORT_ERROR = re.compile(
+    r"context deadline exceeded|Client\.Timeout|connection refused|connection reset|"
+    r"broken pipe|\bEOF\b|i/o timeout|net/http:.*timeout", re.IGNORECASE,
+)
+
+
+def _milky_send_failed(message: str) -> bool:
+    match = _SEND_ERROR.fullmatch(message)
+    if match is None or not _TRANSPORT_ERROR.search(match[3]):
+        return False
+    try:
+        url = urlsplit(match[2])
+        return (
+            url.scheme in {"http", "https"} and url.hostname in {"127.0.0.1", "localhost", "::1"}
+            and not url.username and not url.query and not url.fragment
+            and url.path.endswith(f"/api/send_{match[1].lower()}_message")
+        )
+    except ValueError:
+        return False
 
 
 def _system_message(line: str) -> str:
@@ -80,6 +104,8 @@ def classify_log_line(line: str) -> LogSignal:
     message = _system_message(line)
     if any(pattern.search(message) for pattern in _DEFINITIVE_FAILURE_PATTERNS):
         return LogSignal.DEFINITIVE_FAILURE
+    if _milky_send_failed(message):
+        return LogSignal.FAILURE
     if any(pattern.search(message) for pattern in _RECOVERY_PATTERNS):
         return LogSignal.RECOVERY
     if any(pattern.search(message) for pattern in _FAILURE_PATTERNS):

@@ -543,6 +543,20 @@ sudo python3 scripts/sync_yogurt_endpoint.py \
 ```
 
 同步任务使用文件锁串行修改配置，保留其他连接和权限；没有变化时不写入、不重启。
+0.5.2 起可用 QQ 号代替容易在连接重建后改变的 UUID，例如：
+
+```bash
+sudo python3 scripts/sync_yogurt_endpoint.py \
+  --sealdice-config /path/to/third/data/default/serve.yaml --qq-id 123456789 \
+  --sentinel-config /etc/sealdice-sentinel/config.yaml \
+  --target-id dice3 --connection-id main
+```
+
+此方式仅选择该 QQ 号唯一且已启用的 Milky 连接；缺失、禁用或有歧义时不会改成其他账号。
+为它设置 path 单元时监听所属海豹的 `serve.yaml`，使新连接和新端口保存后能够触发同步，
+而不是只监听旧 UUID 目录。若采用仅由文件变化触发的 oneshot，可关闭失败重启，避免账号
+删除后循环读取已经不存在的源文件；后续文件变化或手动启动会重新同步。
+
 可为每个选定源文件分别设置 systemd path/oneshot 单元，安装脚本不会自行选取账号。
 扩展前请备份配置与数据库。回退到 0.4.x 应恢复单实例配置与升级前的数据库备份，
 避免旧版按服务名合并多个实例的故障；恢复数据库备份会回退升级后的记录。

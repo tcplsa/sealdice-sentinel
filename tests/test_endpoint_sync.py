@@ -106,6 +106,52 @@ def test_external_milky_endpoint_follows_selected_sealdice_adapter(tmp_path):
     assert not sync_endpoint(source, target, "dice3", "main", "selected")
 
 
+def test_recreated_connection_is_followed_by_qq_identity(tmp_path):
+    source = tmp_path / "serve.yaml"
+    target = tmp_path / "sentinel.yaml"
+    original = multi_settings()
+    target.write_text(yaml.safe_dump(original))
+    def save(uuid, port, token):
+        source.write_text(yaml.safe_dump({"imSession": {"endPoints": [
+            {"baseInfo": {"id": uuid, "enable": True, "platform": "QQ",
+                          "protocolType": "milky", "userId": "QQ:2325552935"},
+             "adapter": {"rest_gateway": f"http://127.0.0.1:{port}/api", "token": token}},
+            {"baseInfo": {"id": "another-account", "enable": True, "platform": "QQ",
+                          "protocolType": "milky", "userId": "QQ:2449901900"},
+             "adapter": {"rest_gateway": "http://127.0.0.1:9999/api", "token": "other"}},
+        ]}}))
+    save("original-uuid", 36045, "first-token")
+    assert sync_endpoint(source, target, "dice3", "main", qq_id=2325552935)
+    save("replacement-uuid", 41885, "replacement-token")
+    assert sync_endpoint(source, target, "dice3", "main", qq_id=2325552935)
+    updated = yaml.safe_load(target.read_text())
+    connections = updated["monitoring_targets"][0]["milky_connections"]
+    assert connections[0]["base_url"] == "http://127.0.0.1:41885"
+    assert connections[0]["access_token"] == "replacement-token"
+    assert connections[1] == original["monitoring_targets"][0]["milky_connections"][1]
+    assert updated["milky"] == original["milky"]
+    assert not sync_endpoint(source, target, "dice3", "main", qq_id=2325552935)
+
+
+@pytest.mark.parametrize("case", ["missing", "duplicate", "disabled", "wrong-protocol"])
+def test_account_selection_never_substitutes_another_account(tmp_path, case):
+    source = tmp_path / "serve.yaml"
+    target = tmp_path / "sentinel.yaml"
+    selected = {"baseInfo": {"id": "selected", "enable": case != "disabled",
+                            "platform": "QQ", "protocolType": "milky",
+                            "userId": "QQ:2325552935"},
+                "adapter": {"rest_gateway": "http://127.0.0.1:41885/api", "token": "secret"}}
+    if case == "wrong-protocol":
+        selected["baseInfo"]["protocolType"] = "official"
+    endpoints = [] if case == "missing" else [selected, selected] if case == "duplicate" else [selected]
+    source.write_text(yaml.safe_dump({"imSession": {"endPoints": endpoints}}))
+    target.write_text(yaml.safe_dump(multi_settings()))
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match="not found or is ambiguous"):
+        sync_endpoint(source, target, "dice3", "main", qq_id=2325552935)
+    assert target.read_bytes() == before
+
+
 @pytest.mark.skipif(_module.fcntl is None, reason="Linux file locks are unavailable")
 def test_simultaneous_endpoint_updates_preserve_both_changes(tmp_path):
     target = tmp_path / "sentinel.yaml"
