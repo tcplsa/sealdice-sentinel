@@ -82,6 +82,7 @@ def test_probe_checks_identity_online_and_never_persists_response(mode):
             assert result.healthy is (mode == "good")
             assert "SECRET" not in str(result) and "secret-token" not in str(result)
             assert result.details["delivery_verified"] is False
+            assert (result.details.get('failure_kind') == 'probe_timeout') is (mode == 'timeout')
         finally:
             await runner.cleanup()
     asyncio.run(scenario())

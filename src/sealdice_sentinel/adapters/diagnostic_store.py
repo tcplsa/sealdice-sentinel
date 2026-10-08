@@ -7,6 +7,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
+def _utc_time(value: str | datetime) -> datetime:
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    # Older records without an offset were written by the UTC sampler.
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _sql_lower_bound(value: datetime) -> str:
+    # SQLite rounds fractional seconds. Query a one-second margin, then compare
+    # aware datetimes in Python to preserve the exact microsecond boundary.
+    minimum = datetime.min.replace(tzinfo=UTC)
+    return max(minimum, value - timedelta(seconds=1)).isoformat() \
+        if value >= minimum + timedelta(seconds=1) else minimum.isoformat()
+
+
 class DiagnosticStore:
     """Separate bounded stores: root writes resource samples; Sentinel writes evidence.
 
@@ -43,6 +57,8 @@ class DiagnosticStore:
             db.execute("CREATE TABLE IF NOT EXISTS resource_samples "
                        "(id INTEGER PRIMARY KEY, at TEXT NOT NULL, payload TEXT NOT NULL)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_resource_time ON resource_samples(at)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_resource_instant "
+                       "ON resource_samples(julianday(at))")
 
     def initialize_evidence(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +72,7 @@ class DiagnosticStore:
                     kind TEXT NOT NULL, payload TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_observation_scope_time ON observations(scope, at);
+                CREATE INDEX IF NOT EXISTS idx_observation_instant ON observations(julianday(at));
                 CREATE TABLE IF NOT EXISTS reports (
                     id TEXT PRIMARY KEY, scope TEXT NOT NULL, created_at TEXT NOT NULL,
                     due_at TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL
@@ -70,41 +87,48 @@ class DiagnosticStore:
         return text
 
     def append_resource(self, sample: dict, maximum: int = 720) -> None:
+        encoded = self._encode(sample)
+        timestamp = _utc_time(sample["at"]).isoformat()
         with self.connect() as db:
             db.execute("INSERT INTO resource_samples(at,payload) VALUES (?,?)",
-                       (sample["at"], self._encode(sample)))
+                       (timestamp, encoded))
             db.execute("DELETE FROM resource_samples WHERE id NOT IN "
                        "(SELECT id FROM resource_samples ORDER BY id DESC LIMIT ?)", (maximum,))
 
     def resources(self, since: datetime | None = None, limit: int = 720) -> list[dict]:
         if not self.path.is_file():
             return []
+        cutoff = _utc_time(since or datetime.min.replace(tzinfo=UTC))
         with self.connect(readonly=True) as db:
-            rows = db.execute("SELECT payload FROM resource_samples WHERE at>=? "
+            rows = db.execute("SELECT at,payload FROM resource_samples "
+                              "WHERE julianday(at)>=julianday(?) "
                               "ORDER BY id DESC LIMIT ?",
-                              ((since or datetime.min.replace(tzinfo=UTC)).isoformat(),
+                              (_sql_lower_bound(cutoff),
                                min(max(limit, 1), 3600))).fetchall()
-            return [json.loads(row[0]) for row in reversed(rows)]
+            return [{**json.loads(row["payload"]), "at": _utc_time(row["at"]).isoformat()}
+                    for row in reversed(rows) if _utc_time(row["at"]) >= cutoff]
 
     def append_observation(self, at: datetime, scope: str, kind: str, payload: dict) -> None:
         with self.connect() as db:
             db.execute("INSERT INTO observations(at,scope,kind,payload) VALUES (?,?,?,?)",
-                       (at.isoformat(), scope, kind, self._encode(payload, 16384)))
+                       (_utc_time(at).isoformat(), scope, kind, self._encode(payload, 16384)))
             db.execute("DELETE FROM observations WHERE id NOT IN "
                        "(SELECT id FROM observations ORDER BY id DESC LIMIT 6000)")
 
     def observations(self, since: datetime, scope: str | None = None) -> list[dict]:
+        cutoff = _utc_time(since)
         with self.connect(readonly=True) as db:
             rows = db.execute(
-                "SELECT at,scope,kind,payload FROM observations WHERE at>=? "
+                "SELECT at,scope,kind,payload FROM observations WHERE julianday(at)>=julianday(?) "
                 "AND (? IS NULL OR scope=? OR scope=? OR "
                 "(instr(?, '/')=0 AND substr(scope,1,length(?)+1)=?||'/') OR scope='server') "
                 "ORDER BY id DESC LIMIT 800",
-                (since.isoformat(), scope, scope, scope.split("/")[0] if scope else None,
+                (_sql_lower_bound(cutoff), scope, scope, scope.split("/")[0] if scope else None,
                  scope, scope, scope),
             ).fetchall()
-            return [{"at": row["at"], "scope": row["scope"], "kind": row["kind"],
-                     **json.loads(row["payload"])} for row in reversed(rows)]
+            return [{**json.loads(row["payload"]), "at": _utc_time(row["at"]).isoformat(),
+                     "scope": row["scope"], "kind": row["kind"]}
+                    for row in reversed(rows) if _utc_time(row["at"]) >= cutoff]
 
     def save_report(self, report: dict, maximum: int, retention_days: int) -> None:
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
@@ -123,18 +147,22 @@ class DiagnosticStore:
         with self.connect() as db:
             db.execute("INSERT INTO reports VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE "
                        "SET state=excluded.state,payload=excluded.payload",
-                       (report["id"], report["scope"], report["created_at"], report["due_at"],
+                       (report["id"], report["scope"], _utc_time(report["created_at"]).isoformat(),
+                        _utc_time(report["due_at"]).isoformat(),
                         report["state"], self._encode(report, 524288)))
-            db.execute("DELETE FROM reports WHERE created_at<?", (cutoff.isoformat(),))
+            db.execute("DELETE FROM reports WHERE julianday(created_at)<julianday(?)",
+                       (cutoff.isoformat(),))
             db.execute("DELETE FROM reports WHERE id NOT IN "
-                       "(SELECT id FROM reports ORDER BY created_at DESC LIMIT ?)", (maximum,))
+                       "(SELECT id FROM reports ORDER BY julianday(created_at) DESC LIMIT ?)",
+                       (maximum,))
 
     def reports(self, pending: bool = False, limit: int = 20) -> list[dict]:
         if not self.path.is_file():
             return []
         with self.connect(readonly=True) as db:
             rows = db.execute("SELECT payload FROM reports WHERE (?=0 OR state='collecting') "
-                              "ORDER BY created_at DESC LIMIT ?", (int(pending), limit)).fetchall()
+                              "ORDER BY julianday(created_at) DESC LIMIT ?",
+                              (int(pending), limit)).fetchall()
             return [json.loads(row[0]) for row in rows]
 
     def report(self, identifier: str) -> dict | None:
@@ -145,8 +173,8 @@ class DiagnosticStore:
     def last_capture(self, scope: str) -> datetime | None:
         with self.connect(readonly=True) as db:
             row = db.execute("SELECT created_at FROM reports WHERE scope=? "
-                             "ORDER BY created_at DESC LIMIT 1", (scope,)).fetchone()
-            return datetime.fromisoformat(row[0]) if row else None
+                             "ORDER BY julianday(created_at) DESC LIMIT 1", (scope,)).fetchone()
+            return _utc_time(row[0]) if row else None
 
     def checkpoint(self) -> None:
         with closing(sqlite3.connect(self.path, timeout=1)) as db:

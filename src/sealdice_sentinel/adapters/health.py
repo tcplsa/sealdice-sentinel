@@ -70,7 +70,8 @@ class MilkyProcessProbe(_MilkyProbe):
             healthy, reason = await self._call("get_impl_info", {})
         except (aiohttp.ClientError, TimeoutError, ValueError, TypeError) as exc:
             healthy = False
-            reason = f"{type(exc).__name__}: {exc}"
+            action = self._stages[-1]["action"] if self._stages else "get_impl_info"
+            reason = f"{action}: {type(exc).__name__}"
         return HealthSample(
             service=ServiceName.YOGURT,
             healthy=healthy,
@@ -95,6 +96,7 @@ class MilkySessionProbe(_MilkyProbe):
         started = time.perf_counter()
         self._stages = []
         checked_at = datetime.now(UTC)
+        failure_details = {}
         try:
             healthy, reason = await self._call("get_login_info", {})
             if healthy:
@@ -106,7 +108,10 @@ class MilkySessionProbe(_MilkyProbe):
                 )
         except (aiohttp.ClientError, TimeoutError, ValueError, TypeError) as exc:
             healthy = False
-            reason = f"{type(exc).__name__}: {exc}"
+            action = self._stages[-1]["action"] if self._stages else "get_login_info"
+            reason = f"{action}: {type(exc).__name__}"
+            if isinstance(exc, TimeoutError):
+                failure_details = {"failure_kind": "probe_timeout", "session_state": "unconfirmed"}
         return HealthSample(
             service=ServiceName.QQ,
             healthy=healthy,
@@ -114,7 +119,7 @@ class MilkySessionProbe(_MilkyProbe):
             latency_ms=int((time.perf_counter() - started) * 1000),
             reason=reason,
             details={"stages": self._stages, "read_only": True,
-                     "delivery_verified": False},
+                     "delivery_verified": False, **failure_details},
         )
 
 

@@ -31,6 +31,7 @@ class OneBotProbe:
         started = time.monotonic()
         stages = []
         healthy, reason = True, None
+        failure_details = {}
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as client:
                 for action in (["get_status", "get_login_info"] if self.session
@@ -67,10 +68,13 @@ class OneBotProbe:
             healthy = False
             # Do not expose JSON parsing snippets, URL or response data in errors.
             reason = "OneBot read-only probe: " + type(error).__name__
+            if self.session and isinstance(error, TimeoutError):
+                failure_details = {"failure_kind": "probe_timeout", "session_state": "unconfirmed"}
         return HealthSample(
             ServiceName.QQ if self.session else ServiceName.ONEBOT, healthy, datetime.now(UTC),
             latency_ms=round((time.monotonic() - started) * 1000), reason=reason,
-            details={"stages": stages, "read_only": True, "delivery_verified": False},
+            details={"stages": stages, "read_only": True, "delivery_verified": False,
+                     **failure_details},
         )
 
 

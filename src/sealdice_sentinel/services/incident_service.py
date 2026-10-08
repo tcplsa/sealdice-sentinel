@@ -35,6 +35,15 @@ def failure_kind(service: ServiceName, source: str, reason: str) -> str:
     return f"{SERVICE_LABELS[service]}可用性检查失败（根因未确定）"
 
 
+def failure_severity(sample: HealthSample, source: str) -> Severity:
+    if (sample.service is ServiceName.QQ and source.startswith("health:")
+            and sample.details.get("read_only") is True
+            and sample.details.get("failure_kind") == "probe_timeout"
+            and sample.details.get("session_state") == "unconfirmed"):
+        return Severity.WARNING
+    return Severity.CRITICAL
+
+
 class IncidentService:
     def __init__(
         self,
@@ -74,18 +83,39 @@ class IncidentService:
     async def report_down(self, sample: HealthSample, source: str) -> bool:
         sample = replace(sample, instance_id=self._instance_id)
         await self._repository.record_health_sample(sample)
+        if failure_severity(sample, source) is Severity.WARNING:
+            # A failed read-only request is evidence of degradation, not a
+            # confirmed QQ outage. Do not let it open an incident that would
+            # absorb a later explicit bot_offline event for the same account.
+            if self._notify_failures:
+                first = sample.first_failed_at or sample.checked_at
+                await self._notifications.publish(Notification(
+                    dedup_key=f"probe-warning:{self._instance_id}:{sample.service}:{first.isoformat()}",
+                    severity=Severity.WARNING,
+                    subject=f"[警告][SealDice Sentinel] {self._label(sample.service)}探测超时",
+                    body=(f"{self._identity()}"
+                          f"探测对象：{self._label(sample.service)}\n"
+                          f"首次异常观测：{self._time(first)}\n"
+                          f"检测来源：{source}\n"
+                          f"检测证据：{sample.reason}\n"
+                          "只读请求超时；尚不能确认 QQ 已退出登录或实际发送失败。\n"
+                          "分阶段检查与现场诊断继续保存在本地，不自动重启或重新登录。"),
+                ))
+            return False
         incident = await self._repository.open_incident(sample, source)
         if incident is None:
             return False
         if not self._notify_failures:
             return True
         label = self._label(incident.service)
+        severity = failure_severity(sample, source)
+        severity_label = "警告" if severity is Severity.WARNING else "严重"
         context = await self._diagnostic_context(self._instance_id) if self._diagnostic_context else ""
         await self._notifications.publish(
             Notification(
                 dedup_key=f"incident-open:{incident.incident_id}",
-                severity=Severity.CRITICAL,
-                subject=f"[严重][SealDice Sentinel] {label}异常",
+                severity=severity,
+                subject=f"[{severity_label}][SealDice Sentinel] {label}异常",
                 body=(
                     f"故障编号：{incident.incident_id}\n"
                     f"{self._identity()}"

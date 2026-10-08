@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from sealdice_sentinel.adapters.health import MilkySessionProbe
+from sealdice_sentinel.adapters.health import MilkyProcessProbe, MilkySessionProbe
 from sealdice_sentinel.adapters.sqlite import SQLiteStore
 from sealdice_sentinel.models import HealthSample, ServiceName
 from sealdice_sentinel.services.health_monitor import HealthMonitor
@@ -14,6 +14,27 @@ from sealdice_sentinel.services.notification_service import NotificationService
 class UnusedProbe:
     async def health(self):
         raise AssertionError("probe should not be called in this unit test")
+
+
+def test_timeout_names_failed_stage_and_does_not_confirm_session_offline():
+    async def scenario():
+        async def failing_call(action, _payload):
+            probe._stages.append({'action': action, 'healthy': False, 'error_type': 'TimeoutError'})
+            raise TimeoutError('must not leak arbitrary exception text')
+        for cls in (MilkySessionProbe, MilkyProcessProbe):
+            probe = cls('http://127.0.0.1:3000', 'token')
+            probe._call = failing_call
+            sample = await probe.health()
+            assert not sample.healthy
+            assert 'must not leak' not in sample.reason
+            if cls is MilkySessionProbe:
+                assert sample.reason == 'get_login_info: TimeoutError'
+                assert sample.details['failure_kind'] == 'probe_timeout'
+                assert sample.details['session_state'] == 'unconfirmed'
+            else:
+                assert sample.reason == 'get_impl_info: TimeoutError'
+                assert 'failure_kind' not in sample.details
+    asyncio.run(scenario())
 
 
 def test_failure_threshold_delays_incident(tmp_path) -> None:

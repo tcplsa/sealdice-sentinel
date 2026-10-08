@@ -12,6 +12,52 @@ from sealdice_sentinel.services.reply_latency import parse_reply_observation
 from sealdice_sentinel.services.sealdice_log_monitor import SealDiceJournalMonitor
 
 
+def test_unconfirmed_qq_timeout_keeps_evidence_without_absorbing_true_offline(tmp_path):
+    async def scenario():
+        store = SQLiteStore(tmp_path / 'state.db')
+        await store.initialize()
+        notifications = NotificationService(store, email_policy='critical_only')
+        incidents = IncidentService(store, notifications)
+        now = datetime.now(UTC)
+        sample = HealthSample(
+            ServiceName.QQ, False, now, reason='get_login_info: TimeoutError',
+            details={'read_only': True, 'failure_kind': 'probe_timeout',
+                     'session_state': 'unconfirmed'},
+        )
+        assert not await incidents.report_down(sample, 'health:default:qq-session')
+        assert await store.pending() == []
+        with closing(sqlite3.connect(store._path)) as db:
+            assert db.execute('SELECT count(*) FROM health_samples').fetchone()[0] == 1
+            assert db.execute('SELECT count(*) FROM incidents').fetchone()[0] == 0
+        # A later explicit offline event must still create a critical alert.
+        assert await incidents.report_down(
+            HealthSample(ServiceName.QQ, False, now + timedelta(seconds=1), reason='offline'),
+            'milky:bot_offline',
+        )
+        pending = await store.pending()
+        assert len(pending) == 1 and pending[0].severity is Severity.CRITICAL
+        assert '明确上报' in pending[0].body
+
+    asyncio.run(scenario())
+
+
+def test_confirmed_process_and_send_failures_still_mail_in_quiet_mode(tmp_path):
+    async def scenario():
+        store = SQLiteStore(tmp_path / 'state.db')
+        await store.initialize()
+        incidents = IncidentService(store, NotificationService(store, email_policy='critical_only'))
+        for service, source in [(ServiceName.YOGURT, 'health:milky-process'),
+                                (ServiceName.SEALDICE_LINK, 'journal:sealdice.service')]:
+            assert await incidents.report_down(HealthSample(
+                service, False, datetime.now(UTC), reason='TimeoutError',
+                details={'read_only': True, 'failure_kind': 'probe_timeout',
+                         'session_state': 'unconfirmed'},
+            ), source)
+        assert len(await store.pending()) == 2
+
+    asyncio.run(scenario())
+
+
 def test_quiet_policy_suppresses_warnings_recovery_and_old_queue(tmp_path):
     async def scenario():
         store = SQLiteStore(tmp_path / "state.db")
