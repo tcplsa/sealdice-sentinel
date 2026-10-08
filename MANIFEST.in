@@ -3,3 +3,5 @@ include config.example.yaml
 recursive-include scripts *.py *.sh *.js
 recursive-include systemd *.service *.timer
 recursive-include docs *.md
+recursive-include integrations *.md *.py *.html
+recursive-include tests *.cjs

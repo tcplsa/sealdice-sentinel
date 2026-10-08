@@ -29,7 +29,7 @@ from .sealdice_log_monitor import (
 
 LIMITATIONS = (
     "只读 API 响应正常不代表消息发送成功；TCP 已连接不代表 QQ 会话有效。",
-    "回复计时测量消息钩子到首条发送 API 完成回调，包含脚本钩子调度；不是最终送达耗时。",
+    "历史 JS 计时含钩子调度；当前停用 JS 发送钩子，OneBot 代理计时也不是最终送达耗时。",
     "不能逐条测量签名耗时、内部发送锁等待、SSO 发包到回执耗时。",
     "不能确认 QQ 服务端最终投递或群成员实际收到消息；没有异常证据不等同于排除该层。",
     "5 秒采样可能遗漏更短的峰值；资源快照只能证明同时观测到的压力。",
@@ -40,6 +40,7 @@ TRIGGER_LABELS = {
     "onebot_send_unobserved": "OneBot 发送结果未确认",
     "slow_onebot_send": "OneBot 发送 API 返回慢",
     "health_failure": "接口探测失败", "send_failed": "发送接口异常",
+    "qq_auth_error": "QQ 发送身份校验失败",
     "slow_reply": "回复 API 成功但耗时偏高", "slow_readonly_probe": "只读接口响应慢",
     "reply_progress_unobserved": "等待回复完成回调超时（未确认掉线）",
     "slow_sql": "数据库慢查询", "sign_error": "签名日志错误",
@@ -55,6 +56,17 @@ def log_observation(line: str) -> dict | None:
     message = _system_message(line)
     if not message:
         return None
+    rejected = re.fullmatch(
+        r"Failed to send (group|private)(?: forward)? message to QQ(?:-Group)?:\d+: "
+        r"API call failed: (.+)", message, re.IGNORECASE,
+    )
+    if rejected:
+        error = rejected[2]
+        code = ("170019003" if re.search(r"\b170019003\b", error) else
+                "-10003" if re.search(r"\bcode -10003\b", error) else None)
+        if code and re.search(r"verify identify fail|身份验证失败", error, re.IGNORECASE):
+            return {"layer": "milky_to_qq", "event": "qq_auth_error",
+                    "action": "send_" + rejected[1].lower() + "_message", "error_code": code}
     if _milky_send_failed(message):
         match = _SEND_ERROR.fullmatch(message)
         error = match[3].lower()
@@ -182,6 +194,10 @@ def resource_findings(samples: list[dict], target_id: str, now: datetime,
 def report_findings(resources: list[dict], observations: list[dict], scope: str,
                     now: datetime, maximum_age: int = 20) -> list[str]:
     result = resource_findings(resources, scope.split("/")[0], now, maximum_age)
+    auth_failures = [entry for entry in observations if entry.get("event") == "qq_auth_error"]
+    if auth_failures:
+        result.append(f"QQ 发送接口返回身份校验失败（{len(auth_failures)} 次）；只读接口正常不能排除"
+                      "发送被拒绝，也不能仅凭该错误判定整个账号离线。")
     failures = [entry for entry in observations if entry.get("event") == "send_failed"]
     if failures:
         result.append(f"海豹日志报告 {len(failures)} 次发送 API 异常；说明发送请求未及时成功，"
@@ -339,7 +355,7 @@ class DiagnosticsService:
             return
         scope = self.ports.get((target_id, signal.get("port")), target_id)
         await asyncio.to_thread(self.store.append_observation, occurred_at, scope, "log", signal)
-        if signal["event"] in {"send_failed", "sign_error", "heartbeat_error", "receive_error",
+        if signal["event"] in {"send_failed", "qq_auth_error", "sign_error", "heartbeat_error", "receive_error",
                                "process_exit_or_start_failure", "slow_sql", "unscoped_connection_error"}:
             await self.capture(scope, signal["event"], occurred_at)
 

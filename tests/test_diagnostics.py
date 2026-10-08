@@ -38,6 +38,21 @@ from sealdice_sentinel.services.diagnostics import (
 from sealdice_sentinel.services.health_monitor import HealthMonitor
 
 
+@pytest.mark.parametrize("detail,code", [
+    ("Oidb(cmd=11c5, svc=100) failed with 170019003: verify identify fail", "170019003"),
+    ("Service (MessageSvc.PbSendMsg) call failed with code -10003: 身份验证失败，请你重新登录。", "-10003"),
+])
+def test_auth_send_rejection_is_metadata_only_and_chat_quotes_are_ignored(detail, code):
+    message = "Failed to send private message to QQ:1841355687: API call failed: " + detail
+    observed = log_observation(message)
+    assert observed == {"layer": "milky_to_qq", "event": "qq_auth_error",
+                        "action": "send_private_message", "error_code": code}
+    assert "1841355687" not in json.dumps(observed)
+    assert log_observation("收到群(QQ-Group:10000)内<玩家>(QQ:20000)的消息: " + message) is None
+    findings = report_findings([], [{"kind": "log", **observed}], "default", datetime.now(UTC))
+    assert any("身份校验失败" in item for item in findings)
+
+
 def test_kernel_parsers_and_counter_resets():
     assert counter_delta(5, 7) is None
     assert counter_delta(5, None) is None
