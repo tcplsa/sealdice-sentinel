@@ -45,9 +45,9 @@ def patch(source):
     helpers = (
         'const _snowManaged=e=>e.userId==="QQ:2325552935"&&e.protocolType==="pureonebot"'
         '&&e.adapter?.connectUrl==="ws://127.0.0.1:38002/",'
-        '_snowTarget=e=>_snowManaged(e)||e.id==="b06eba04-d09a-4c97-ae8a-4d5d4c6d46b6",'
+        '_snowTarget=e=>_snowManaged(e)||(e.userId==="QQ:2325552935"&&e.protocolType==="milky"),'
         '_snowConns=items=>{const active=items.some(e=>_snowManaged(e)&&e.enable);'
-        'return items.filter(e=>!(active&&!e.enable&&e.id==="b06eba04-d09a-4c97-ae8a-4d5d4c6d46b6"))},'
+        'return items.filter(e=>!(active&&!e.enable&&e.userId==="QQ:2325552935"&&e.protocolType==="milky"))},'
         f'_snowOpen=()=>{{we();w.accountType={SNOW};w.step=1;w.isEnd=!1;A.value=!0}},'
         '_snowMessage=event=>{if(event.origin!==location.origin||event.source!=='
         'document.getElementById("snowluma-login-frame")?.contentWindow)return;'

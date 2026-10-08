@@ -64,6 +64,8 @@ _TRANSPORT_ERROR = re.compile(
     r"context deadline exceeded|Client\.Timeout|connection refused|connection reset|"
     r"broken pipe|\bEOF\b|i/o timeout|net/http:.*timeout", re.IGNORECASE,
 )
+_JOURNAL_RECORD_LIMIT = 65536
+_JOURNAL_READ_CHUNK = 16384
 
 
 def _milky_send_failed(message: str) -> bool:
@@ -209,10 +211,14 @@ class SealDiceJournalMonitor:
                     "--unit",
                     self._systemd_unit,
                     "--follow",
+                    "--since",
+                    "now",
                     "--lines",
                     "0",
                     "--output",
                     "json",
+                    "--output-fields",
+                    "MESSAGE,__REALTIME_TIMESTAMP",
                     "--no-pager",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
@@ -240,8 +246,15 @@ class SealDiceJournalMonitor:
     async def _consume(self, process: asyncio.subprocess.Process, stop: asyncio.Event) -> None:
         if process.stdout is None:
             raise RuntimeError("journalctl stdout pipe was not created")
+        buffer = bytearray()
+        discarding = False
+        warned_oversize = False
         while not stop.is_set():
-            read_task = asyncio.create_task(process.stdout.readline())
+            # readline() raises on a large record at StreamReader's default 64 KiB
+            # limit. Restarting journalctl then repeatedly reopens its history.
+            # Drain oversized image/chat records in bounded chunks and resume at
+            # the next newline, without decoding or retaining their payload.
+            read_task = asyncio.create_task(process.stdout.read(_JOURNAL_READ_CHUNK))
             stop_task = asyncio.create_task(stop.wait())
             done, pending = await asyncio.wait(
                 (read_task, stop_task),
@@ -252,16 +265,32 @@ class SealDiceJournalMonitor:
             await asyncio.gather(*pending, return_exceptions=True)
             if stop_task in done and stop_task.result():
                 return
-            raw_line = read_task.result()
-            if not raw_line:
+            chunk = read_task.result()
+            if not chunk:
                 return
-            try:
-                entry = json.loads(raw_line)
-                occurred_at = datetime.fromtimestamp(
-                    int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC
-                )
-                message = entry["MESSAGE"]
-                if isinstance(message, str):
-                    await self.process_line(message, occurred_at)
-            except (ValueError, KeyError, TypeError, OverflowError):
-                self._logger.warning("Ignored journal record without a valid timestamp/message")
+            pieces = chunk.split(b"\n")
+            for index, piece in enumerate(pieces):
+                if not discarding:
+                    if len(buffer) + len(piece) > _JOURNAL_RECORD_LIMIT:
+                        buffer.clear()
+                        discarding = True
+                        if not warned_oversize:
+                            self._logger.warning("Oversized journal record skipped; log coverage is limited")
+                            warned_oversize = True
+                    else:
+                        buffer.extend(piece)
+                if index == len(pieces) - 1:
+                    continue
+                if not discarding:
+                    try:
+                        entry = json.loads(buffer)
+                        occurred_at = datetime.fromtimestamp(
+                            int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000, tz=UTC
+                        )
+                        message = entry["MESSAGE"]
+                        if isinstance(message, str):
+                            await self.process_line(message, occurred_at)
+                    except (ValueError, KeyError, TypeError, OverflowError):
+                        self._logger.warning("Ignored journal record without a valid timestamp/message")
+                buffer.clear()
+                discarding = False

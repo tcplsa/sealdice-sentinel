@@ -80,7 +80,7 @@ def test_successful_slow_reply_is_recorded_and_captured_without_error(tmp_path):
     asyncio.run(scenario())
 
 
-def test_javascript_observer_matches_runtime_context_and_releases_pending_references():
+def test_legacy_javascript_observer_cannot_register_reentrant_send_hooks():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is needed for the isolated JS-hook harness")

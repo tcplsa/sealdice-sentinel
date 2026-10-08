@@ -32,6 +32,14 @@ the connection; connection status does not prove message delivery.
 * Program files: `/opt/snowluma/web`, root-owned, readable by the service.
 * Python: `/opt/sealdice-sentinel/current/venv/bin/python`, with aiohttp and PyYAML.
 
+Use `NODE_OPTIONS=--max-old-space-size=256` in the SnowLuma supervisor program's
+environment, not that flag on the node command line. SnowLuma passes
+`process.execArgv` to its database migration Worker; V8 memory flags in that
+explicit list cause `ERR_WORKER_INVALID_EXEC_ARGV`. The service cgroup limits
+still bound total memory. Verify an actual Worker startup and read-only OneBot
+status after changing the launch configuration; a running node process alone
+does not prove the login completed.
+
 `patch_webui.py` adds a real Vue option, embedded panel and account lifecycle hooks
 to the **exact installed** frontend asset. It checks the full SHA-256 before
 changing anything. Generate `index-snowluma-v1.js` from `index-Crjbs6FH.js`, then

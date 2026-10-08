@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -140,3 +141,31 @@ async def _run_lifecycle(tmp_path) -> None:
     await monitor.process_line("Milky reconnected successfully", started + timedelta(seconds=30))
     keys = [item.dedup_key for item in await store.pending()]
     assert keys == ["incident-open:1", "incident-close:1"]
+
+
+def test_oversized_journal_records_are_drained_without_restarting_or_losing_next_signal():
+    async def scenario():
+        records = []
+        monitor = SealDiceJournalMonitor("sealdice.service", None)
+
+        async def observe(message, at):
+            records.append((message, at))
+
+        monitor.process_line = observe
+        reader = asyncio.StreamReader()
+        normal = json.dumps({"__REALTIME_TIMESTAMP": "1791432000000000", "MESSAGE": "Milky request timeout"}).encode()
+        # Split a multibyte record and a huge image across arbitrary chunks. The
+        # default StreamReader limit must not cause a LimitOverrunError/restart.
+        unicode_record = json.dumps({"__REALTIME_TIMESTAMP": "1791432000000001", "MESSAGE": "保存数据"},
+                                    ensure_ascii=False).encode()
+        source = unicode_record + b"\n" + b'{"MESSAGE":"' + b"x" * 200000 + b'"}\n' + normal + b"\n"
+        task = asyncio.create_task(monitor._consume(SimpleNamespace(stdout=reader), asyncio.Event()))
+        for start in range(0, len(source), 377):
+            reader.feed_data(source[start:start + 377])
+            await asyncio.sleep(0)
+        reader.feed_eof()
+        await asyncio.wait_for(task, 2)
+        assert [message for message, _ in records] == ["保存数据", "Milky request timeout"]
+        assert records[-1][1] == datetime.fromtimestamp(1791432000, tz=UTC)
+
+    asyncio.run(scenario())
