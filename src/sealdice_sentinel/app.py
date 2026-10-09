@@ -58,6 +58,19 @@ async def supervise(
             pass
 
 
+async def finish_workers(tasks, grace_seconds=3) -> None:
+    """Let workers observe stop, then cancel our outstanding probes and waits."""
+    if not tasks:
+        return
+    _, pending = await asyncio.wait(tasks, timeout=grace_seconds)
+    for task in pending:
+        task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+    except TimeoutError:
+        logging.getLogger(__name__).warning('Worker cleanup exceeded shutdown deadline')
+
+
 def build_monitors(
     config: AppConfig,
     store: SQLiteStore,
@@ -294,8 +307,11 @@ async def run(config_path: Path) -> None:
         await stop.wait()
     finally:
         stop.set()
-        await webhook.stop()
-        await asyncio.gather(*tasks)
+        try:
+            await asyncio.wait_for(webhook.stop(), timeout=5)
+        except TimeoutError:
+            logger.warning('Webhook cleanup exceeded shutdown deadline')
+        await finish_workers(tasks)
         logger.info("SealDice Sentinel stopped")
 
 

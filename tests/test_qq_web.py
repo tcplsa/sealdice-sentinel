@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import importlib.util
 import io
 import json
@@ -246,4 +247,41 @@ def test_selected_qq_prepare_invokes_only_the_fixed_service(tmp_path, monkeypatc
                 assert json.loads(request_file.read_text()) == {'account': '2325552935'}
                 assert gateway.config['account'] == '2325552935'
                 assert gateway.config['onebot_token'] == 'new-secret'
+    asyncio.run(scenario())
+
+
+def test_paused_sl_blocks_login_actions_and_stale_cutover_reports_failure(tmp_path):
+    async def scenario():
+        async def core(request):
+            if request.headers.get('token') == 'admin':
+                return web.json_response([])
+            raise web.HTTPForbidden()
+        backend = web.Application()
+        backend.router.add_route('*', '/{tail:.*}', core)
+        result_file = tmp_path / 'result.json'
+        result_file.write_text(json.dumps({'state': 'running', 'account': '3764338181',
+            'at': (datetime.datetime.now(datetime.UTC)-datetime.timedelta(minutes=5)).isoformat()}))
+        async with TestServer(backend) as upstream:
+            config = {'core': str(upstream.make_url('')).rstrip('/'), 'account': '3764338181',
+                      'origins': ['http://allowed.example'], 'qr_only': True, 'sl_paused': True,
+                      'result_file': str(result_file)}
+            gateway = module.Gateway(config)
+            async with TestClient(TestServer(gateway.app()), cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                headers = {'Origin': 'http://allowed.example'}
+                assert (await client.get('/qq-login/status')).status == 401
+                assert (await client.post('/qq-login/session', json={'token': 'admin'}, headers=headers)).status == 200
+                status = await (await client.get('/qq-login/status')).json()
+                assert status['state'] == 'paused' and status['can_connect'] is False
+                assert (await client.post('/qq-login/start', json={'account': '3764338181'}, headers=headers)).status == 503
+                assert (await client.get('/qq-login/qr')).status == 410
+                assert (await client.post('/qq-login/action/connect', json={}, headers=headers)).status == 503
+                assert (await client.get('/qq-login/connection')).status == 404
+                assert (await client.get('/qq-login/socket')).status == 404
+                gateway.config['sl_paused'] = False
+
+                async def offline(action):
+                    raise ValueError('unavailable')
+                gateway.onebot = offline
+                value = await (await client.get('/qq-login/status')).json()
+                assert value['action']['state'] == 'failed' and value['action']['phase'] == 'timeout'
     asyncio.run(scenario())

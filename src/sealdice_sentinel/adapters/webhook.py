@@ -38,7 +38,7 @@ class MilkyWebhookServer:
         application.router.add_post(self._path, self._handle)
         if self._usage_repository is not None:
             application.router.add_post(self._usage_path, self._handle_usage)
-        self._runner = web.AppRunner(application)
+        self._runner = web.AppRunner(application, shutdown_timeout=3)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)
         await site.start()

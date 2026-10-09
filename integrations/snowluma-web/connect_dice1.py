@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 import urllib.error
@@ -14,15 +15,24 @@ import yaml
 
 from sealdice_sentinel.config import load_diagnostics_config, load_monitoring_targets
 
-ACCOUNT = json.loads(Path('/opt/snowluma/web-dice1/config.json').read_text())['account']
-assert isinstance(ACCOUNT, str) and re.fullmatch(r'[1-9][0-9]{4,19}', ACCOUNT)
+ACCOUNT = None
+CORE_ROOT = Path('/root/Desktop/Amiya')
 CORE = 'http://127.0.0.1:13212/sd-api/im_connections/'
 CONFIG = Path('/etc/sealdice-sentinel/config.yaml')
 BACKUP = Path('/root/Desktop/Amiya/backups/sl-test-20261009')
 PUBLIC = Path('/var/lib/snowluma-web/dice1-connect-result.json')
 STATE = BACKUP / 'migration-state.json'
 SYNC = 'sealdice-sentinel-endpoint-sync'
-SECRET = json.loads(Path('/opt/snowluma/access-private.json').read_text())[ACCOUNT]
+SECRET = None
+
+
+def configure():
+    global ACCOUNT, SECRET
+    config = json.loads(Path('/opt/snowluma/web-dice1/config.json').read_text())
+    assert not config.get('sl_paused'), 'SL paused by operator'
+    ACCOUNT = config['account']
+    assert isinstance(ACCOUNT, str) and re.fullmatch(r'[1-9][0-9]{4,19}', ACCOUNT)
+    SECRET = json.loads(Path('/opt/snowluma/access-private.json').read_text())[ACCOUNT]
 
 
 def call(url, body=None, headers=None):
@@ -38,9 +48,10 @@ def onebot(action):
     return response['data']
 
 
-def result(state):
+def result(state, phase=""):
+    print("SL cutover:", state, phase, flush=True)
     temp = PUBLIC.with_suffix('.tmp')
-    temp.write_text(json.dumps({'state': state, 'at': datetime.datetime.now(datetime.UTC).isoformat()}))
+    temp.write_text(json.dumps({'state': state, 'account': ACCOUNT, 'phase': phase, 'at': datetime.datetime.now(datetime.UTC).isoformat()}))
     os.chmod(temp, 0o644)
     os.replace(temp, PUBLIC)
 
@@ -57,11 +68,12 @@ def write_config(data):
 
 
 def connect():
+    result('running', 'verify_login')
     assert str(onebot('get_login_info').get('user_id')) == ACCOUNT, 'Wrong account'
     online = onebot('get_status')
     assert online.get('online') is True and online.get('good') is True
     token = None
-    for candidate in yaml.safe_load(Path('/root/Desktop/Amiya/data/dice.yaml').read_text())['accessTokens']:
+    for candidate in yaml.safe_load((CORE_ROOT / 'data/dice.yaml').read_text())['accessTokens']:
         try:
             initial = call(CORE + 'list', headers={'token': candidate})
             if isinstance(initial, list):
@@ -87,7 +99,8 @@ def connect():
     primary_cutover = yaml.safe_load(CONFIG.read_text())['milky'].get('expected_user_id') == 'QQ:' + ACCOUNT
     try:
         if primary_cutover:
-            subprocess.run(['systemctl', 'disable', '--now', SYNC + '.path', SYNC + '.service'], check=True, capture_output=True)
+            subprocess.run(['systemctl', 'disable', '--now', SYNC + '.path', SYNC + '.service'], check=True, capture_output=True, timeout=15)
+        result('running', 'attach')
         if old_enabled:
             api('set_enable', {'id': old_endpoint['id'], 'enable': False})
         data = yaml.safe_load(CONFIG.read_text())
@@ -97,14 +110,17 @@ def connect():
         connection = next(o for o in target['onebot_connections'] if o['expected_user_id'] == 'QQ:' + ACCOUNT)
         connection.update(id='main' if primary_cutover else 'sl-main', monitoring_enabled=True)
         write_config(data)
-        subprocess.run(['systemctl', 'restart', 'sealdice-sentinel.service', 'sealdice-sentinel-resources.service'], check=True)
+        result('running', 'reload_monitor')
+        subprocess.run(['systemctl', 'restart', 'sealdice-sentinel.service', 'sealdice-sentinel-resources.service'], check=True, timeout=25)
         time.sleep(2)
-        if new_id:
-            api('set_enable', {'id': new_id, 'enable': True})
-        else:
+        result('running', 'enable_endpoint')
+        if not new_id:
             added = api('addGocqSeparate', {'account': ACCOUNT, 'connectUrl': 'ws://127.0.0.1:38022/', 'accessToken': SECRET})
             assert isinstance(added, dict) and added.get('id')
             new_id = added['id']
+        # The core creates separate OneBot endpoints disabled; explicitly enable
+        # newly created endpoints as well as existing ones.
+        api('set_enable', {'id': new_id, 'enable': True})
         for _ in range(20):
             current = api('list')
             target = next(e for e in current if e['id'] == new_id)
@@ -119,7 +135,10 @@ def connect():
         STATE.write_text(json.dumps({'account': ACCOUNT, 'old_id': old_endpoint['id'] if old_endpoint else None, 'new_id': new_id, 'stage': 'online'}))
         os.chmod(STATE, 0o600)
         print('Dice1 SL connected; account identity and core connection verified', flush=True)
-    except Exception:
+    except Exception as original:
+        result('running', 'restore')
+        print('SL cutover error:', type(original).__name__,
+              getattr(original, 'code', ''), flush=True)
         if new_id:
             try:
                 api('set_enable', {'id': new_id, 'enable': False})
@@ -129,14 +148,20 @@ def connect():
         if old_endpoint:
             api('set_enable', {'id': old_endpoint['id'], 'enable': old_enabled})
         if primary_cutover:
-            subprocess.run(['systemctl', 'enable', '--now', SYNC + '.path'], check=False, capture_output=True)
-            subprocess.run(['systemctl', 'enable', SYNC + '.service'], check=False, capture_output=True)
-        subprocess.run(['systemctl', 'restart', 'sealdice-sentinel.service', 'sealdice-sentinel-resources.service'], check=False)
+            subprocess.run(['systemctl', 'enable', '--now', SYNC + '.path'], check=False, capture_output=True, timeout=15)
+            subprocess.run(['systemctl', 'enable', SYNC + '.service'], check=False, capture_output=True, timeout=15)
+        subprocess.run(['systemctl', 'restart', 'sealdice-sentinel.service', 'sealdice-sentinel-resources.service'], check=False, timeout=25)
         raise
 
 
+def interrupted(signum, frame):
+    raise InterruptedError('Fixed action interrupted')
+
+
 if __name__ == '__main__':
-    result('running')
+    configure()
+    signal.signal(signal.SIGTERM, interrupted)
+    result('running', 'start')
     try:
         connect()
     except Exception as error:  # noqa: BLE001 - fixed public status, no API data or credential errors

@@ -3,7 +3,6 @@ import argparse
 import datetime
 import json
 import os
-import pwd
 import re
 import secrets
 import shutil
@@ -32,8 +31,19 @@ def write(path, value, mode, owner=None):
     os.replace(temp, path)
 
 
+def pending_profile(source, account):
+    section = re.search(r'\[program:qq-main\]\n(.*?)(?=\n\[|\Z)', source, re.DOTALL)
+    home = re.search(r'(?m)^environment=.*?\bHOME="([^"]+)"', section[1]) if section else None
+    return bool(home and Path(home[1]).parent == DATA
+                and re.fullmatch(r'qq-login-' + re.escape(account) + r'-[0-9]{8}-[0-9]{6}',
+                                 Path(home[1]).name))
+
+
 def main(config_path):
+    import pwd
+
     config = json.loads(config_path.read_text())
+    assert not config.get('sl_paused'), 'SL paused by operator'
     request = Path(config['login_request_file'])
     assert not request.is_symlink() and request.is_file()
     assert request.stat().st_uid == pwd.getpwnam('snowluma-web').pw_uid
@@ -66,6 +76,14 @@ def main(config_path):
             return
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         current = None
+    if config['account'] == account and pending_profile(SUPERVISOR.read_text(), account):
+        status = subprocess.run(['supervisorctl', '-c', str(SUPERVISOR), 'status', 'qq-main'],
+                                capture_output=True, text=True, timeout=5, check=False)
+        if re.search(r'\b(RUNNING|STARTING|STOPPING)\b', status.stdout):
+            # A probe failure is not logout. Repeated Connect must not discard
+            # an existing QR, phone confirmation, or authenticated session.
+            print('Existing selected QQ client reused; no login data changed', flush=True)
+            return
     stamp = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d-%H%M%S')
     backup = Path('/root/Desktop/Amiya/backups/sl-test-20261009') / ('login-' + stamp)
     backup.mkdir(mode=0o700)

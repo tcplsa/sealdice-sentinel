@@ -1,6 +1,6 @@
 import asyncio
 
-from sealdice_sentinel.app import supervise
+from sealdice_sentinel.app import finish_workers, supervise
 
 
 def test_supervisor_restarts_failed_worker() -> None:
@@ -20,3 +20,21 @@ async def _run_restart_scenario() -> None:
 
     await supervise("test-worker", flaky_worker, stop, restart_delay_seconds=0)
     assert calls == 2
+
+
+def test_shutdown_cancels_outstanding_probe_and_runs_its_cleanup():
+    async def scenario():
+        cleaned = asyncio.Event()
+
+        async def blocked_probe():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        blocked = asyncio.create_task(blocked_probe())
+        finished = asyncio.create_task(asyncio.sleep(0))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(finish_workers([blocked, finished], grace_seconds=0), timeout=1)
+        assert cleaned.is_set() and blocked.cancelled() and finished.done()
+    asyncio.run(scenario())

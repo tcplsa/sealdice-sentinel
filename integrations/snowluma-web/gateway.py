@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -120,6 +121,10 @@ class Gateway:
 
     async def status(self, request):
         session = await self.authenticated(request)
+        if self.config.get('sl_paused'):
+            return web.json_response({'account': self.config['account'], 'state': 'paused',
+                                     'can_connect': False,
+                                     'message': 'SL 因服务器读写压力已暂停，请使用现有 Yogurt 连接。'})
         result = {"account": self.config["account"], "state": "waiting_login", "can_connect": False}
         endpoints = await self.endpoints(session["token"])
         try:
@@ -142,23 +147,33 @@ class Gateway:
             try:
                 value = json.loads(state_path.read_text())
                 # Return a fixed public schema, never root logs or command errors.
-                result["action"] = {key: value.get(key) for key in ("state", "at")}
+                if value.get('account', self.config['account']) == self.config['account']:
+                    result["action"] = {key: value.get(key) for key in ("state", "at", "phase")}
+                    if value.get('state') == 'running':
+                        stamp = datetime.datetime.fromisoformat(value['at'])
+                        if stamp.tzinfo and (datetime.datetime.now(datetime.UTC)-stamp).total_seconds() > 125:
+                            result['action'].update(state='failed', phase='timeout')
             except (OSError, ValueError):
                 pass
         return web.json_response(result)
 
     async def connection(self, request):
         await self.authenticated(request)
-        if self.config.get("qr_only"):
+        if self.config.get("qr_only") or self.config.get('sl_paused'):
             raise web.HTTPNotFound()
         return web.json_response({"password": self.config["vnc_password"]})
 
     async def prepare(self, request):
         self.origin(request)
         session = await self.authenticated(request)
+        if self.config.get('sl_paused'):
+            raise web.HTTPServiceUnavailable(text='SL 因服务器读写压力已暂停，请使用现有 Yogurt 连接。')
         if request.content_length is None or request.content_length > 1024:
             raise web.HTTPBadRequest()
-        body = await request.json()
+        try:
+            body = await request.json()
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="请输入正确的 QQ 号") from None
         account = body.get("account") if isinstance(body, dict) else None
         if not isinstance(account, str) or not re.fullmatch(r"[1-9][0-9]{4,19}", account):
             raise web.HTTPBadRequest(text="请输入正确的 QQ 号")
@@ -191,7 +206,13 @@ class Gateway:
                 "/usr/bin/sudo", "-n", "/usr/bin/systemctl", "start", unit,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
-            if await asyncio.wait_for(process.wait(), 90) != 0:
+            try:
+                returncode = await asyncio.wait_for(process.wait(), 90)
+            except TimeoutError:
+                process.terminate()
+                await process.wait()
+                raise web.HTTPServiceUnavailable(text="登录准备仍在进行，请稍后重试") from None
+            if returncode != 0:
                 raise web.HTTPServiceUnavailable(text="二维码准备失败，请稍后重试")
             updated = json.loads(Path(self.config["config_file"]).read_text())
             if updated.get("account") != account:
@@ -204,14 +225,19 @@ class Gateway:
 
     async def qr(self, request):
         session = await self.authenticated(request)
+        if self.config.get('sl_paused'):
+            raise web.HTTPGone(text='SL 已暂停，当前二维码不可用')
         if not session.get("qq_started"):
             raise web.HTTPConflict(text="请先填写 QQ 号并点击连接")
         if not self.config.get("qr_python"):
             raise web.HTTPNotFound()
+        if self.prepare_lock.locked():
+            raise web.HTTPConflict(text="正在准备登录，请稍候")
         async with self.qr_lock:
             fresh = request.query.get("refresh") == "1" or session.get("qr_refresh_once", False)
             if not fresh and self.qr_cache and time.monotonic()-self.qr_cache[0] < 5:
-                return web.Response(body=self.qr_cache[1], content_type="image/png")
+                return web.Response(body=self.qr_cache[1], content_type="image/png",
+                                    headers={"Cache-Control": "no-store"})
             args = [self.config["qr_python"], str(ROOT / "qr_capture.py"), "--show"]
             if fresh:
                 args.append("--refresh")
@@ -229,11 +255,14 @@ class Gateway:
                 raise web.HTTPServiceUnavailable(text="二维码暂未就绪，请稍后刷新")
             self.qr_cache = (time.monotonic(), data)
             session["qr_refresh_once"] = False
-            return web.Response(body=data, content_type="image/png")
+            return web.Response(body=data, content_type="image/png",
+                                headers={"Cache-Control": "no-store"})
 
     async def action(self, request):
         self.origin(request)
         await self.authenticated(request)
+        if self.config.get('sl_paused'):
+            raise web.HTTPServiceUnavailable(text='SL 已暂停')
         if time.monotonic() - self.last_action < 20:
             raise web.HTTPTooManyRequests(text="操作正在执行，请稍候")
         name = request.match_info["action"]
@@ -341,7 +370,7 @@ class Gateway:
             return socket
 
     async def desktop(self, request):
-        if self.config.get("qr_only"):
+        if self.config.get("qr_only") or self.config.get('sl_paused'):
             raise web.HTTPNotFound()
         self.origin(request)
         session = await self.authenticated(request)
