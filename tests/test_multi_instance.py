@@ -33,6 +33,23 @@ def test_legacy_configuration_keeps_one_main_target():
     assert targets[0].milky_connections[0].id == "main"
 
 
+def test_primary_milky_can_be_paused_for_onebot_migration():
+    document = configuration()
+    document["milky"]["monitoring_enabled"] = False
+    document["monitoring_targets"] = [{"id": "default", "onebot_connections": [{
+        "id": "sl-main", "name": "主号 SL", "base_url": "http://127.0.0.1:38020",
+        "ws_url": "ws://127.0.0.1:38021", "relay_port": 38022,
+        "access_token": "private-token", "expected_user_id": "QQ:3764338181",
+    }]}]
+    targets = load_monitoring_targets(document)
+    assert not targets[0].milky_connections
+    assert len(targets[0].onebot_connections) == 1
+    assert targets[0].sealdice.health_url == document["sealdice"]["health_url"]
+    document["milky"]["monitoring_enabled"] = "false"
+    with pytest.raises(TypeError, match="monitoring_enabled"):
+        load_monitoring_targets(document)
+
+
 def test_three_instances_and_four_connections_build_independent_monitors(tmp_path, monkeypatch):
     document = configuration()
     third = additional_target("dice3", 3214)

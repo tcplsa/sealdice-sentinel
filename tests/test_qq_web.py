@@ -14,7 +14,11 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path):
+@pytest.mark.parametrize("account,relay_url,cookie", [
+    ("2325552935", "ws://127.0.0.1:38002/", "dice3_qq_login"),
+    ("3764338181", "ws://127.0.0.1:38022/", "dice1_qq_login"),
+])
+def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path, account, relay_url, cookie):
     async def scenario():
         calls = []
         endpoints = []
@@ -31,7 +35,7 @@ def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path):
                                          'SeaDice</body></html>', content_type="text/html")
             if logged_in and request.path in {"/get_login_info", "/get_status"}:
                 assert request.headers.get("Authorization") == "Bearer onebot-secret"
-                data = {"user_id": 2325552935} if request.path == "/get_login_info" else {"online": True, "good": True}
+                data = {"user_id": int(account)} if request.path == "/get_login_info" else {"online": True, "good": True}
                 return web.json_response({"status": "ok", "retcode": 0, "data": data})
             if request.path == "/upload":
                 return web.Response(body=await request.read(), status=201)
@@ -48,7 +52,8 @@ def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path):
         async with TestServer(backend) as upstream:
             config = {"core": str(upstream.make_url("")).rstrip("/"),
                       "onebot": str(upstream.make_url("")).rstrip("/"), "onebot_token": "onebot-secret",
-                      "account": "2325552935", "vnc_password": "vnc-secret",
+                      "account": account, "vnc_password": "vnc-secret",
+                      "relay_url": relay_url, "cookie_name": cookie,
                       "desktop_ws": str(upstream.make_url("/desktop")),
                       "novnc_assets": str(tmp_path), "result_file": str(tmp_path / "status.json"),
                       "origins": ["http://allowed.example"]}
@@ -76,6 +81,9 @@ def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path):
                 assert response.status == 200
                 assert "HttpOnly" in response.headers["Set-Cookie"]
                 assert "SameSite=Strict" in response.headers["Set-Cookie"]
+                assert cookie in response.headers["Set-Cookie"]
+                response = await client.get("/qq-login/panel")
+                assert account in await response.text()
                 response = await client.get("/qq-login/connection")
                 assert await response.json() == {"password": "vnc-secret"}
                 response = await client.get("/qq-login/status")
@@ -98,9 +106,9 @@ def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path):
                 # Existing account lifecycle continues, but legacy enable/add/relogin cannot
                 # create a second enabled client for the managed main account.
                 endpoints.extend([
-                    {"id": "old", "userId": "QQ:2325552935", "protocolType": "milky", "enable": False},
-                    {"id": "snow", "userId": "QQ:2325552935", "protocolType": "pureonebot", "enable": True,
-                     "state": 1, "adapter": {"connectUrl": "ws://127.0.0.1:38002/"}},
+                    {"id": "old", "userId": "QQ:" + account, "protocolType": "milky", "enable": False},
+                    {"id": "snow", "userId": "QQ:" + account, "protocolType": "pureonebot", "enable": True,
+                     "state": 1, "adapter": {"connectUrl": relay_url}},
                     {"id": "other", "userId": "QQ:2449901900", "protocolType": "milky", "enable": True},
                 ])
                 logged_in = True
@@ -109,8 +117,8 @@ def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path):
                 for action, body in [
                     ("set_enable", {"id": "old", "enable": True}),
                     ("gocqhttpRelogin", {"id": "old"}),
-                    ("addMilkyInternal", {"uin": 2325552935}),
-                    ("addGocqSeparate", {"account": "2325552935"}),
+                    ("addMilkyInternal", {"uin": int(account)}),
+                    ("addGocqSeparate", {"account": account}),
                 ]:
                     path = "/sd-api/im_connections/" + action
                     count = calls.count(path)

@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from pathlib import Path
@@ -32,7 +33,10 @@ def headers_without_hop(headers):
 
 class Gateway:
     def __init__(self, config):
+        if not re.fullmatch(r"[1-9][0-9]{4,19}", config["account"]):
+            raise ValueError("Invalid managed QQ account")
         self.config = config
+        self.cookie = config.get("cookie_name", COOKIE)
         self.sessions = {}
         self.attempts = {}
         self.sockets = set()
@@ -41,7 +45,7 @@ class Gateway:
 
     def origin(self, request):
         if request.headers.get("Origin") not in self.config["origins"]:
-            raise web.HTTPForbidden(text="请从三号海豹的 QQ 登录页面操作")
+            raise web.HTTPForbidden(text="请从此海豹的 QQ 登录页面操作")
 
     async def endpoints(self, token):
         async with self.client.get(
@@ -49,14 +53,14 @@ class Gateway:
             timeout=aiohttp.ClientTimeout(total=5), allow_redirects=False,
         ) as response:
             if response.status != 200:
-                raise web.HTTPUnauthorized(text="请先登录三号海豹 WebUI")
+                raise web.HTTPUnauthorized(text="请先登录此海豹 WebUI")
             body = await response.json()
             if not isinstance(body, list):
                 raise web.HTTPUnauthorized()
             return body
 
     async def authenticated(self, request):
-        key = request.cookies.get(COOKIE)
+        key = request.cookies.get(self.cookie)
         session = self.sessions.get(key)
         if not session or session["until"] <= time.monotonic():
             self.sessions.pop(key, None)
@@ -82,17 +86,17 @@ class Gateway:
             raise web.HTTPBadRequest() from None
         token = body.get("token") if isinstance(body, dict) else None
         if not isinstance(token, str) or not 1 <= len(token) <= 4096:
-            raise web.HTTPUnauthorized(text="请先登录三号海豹 WebUI")
+            raise web.HTTPUnauthorized(text="请先登录此海豹 WebUI")
         await self.endpoints(token)
         self.sessions = {key: value for key, value in self.sessions.items() if value["until"] > now}
-        previous = request.cookies.get(COOKIE)
+        previous = request.cookies.get(self.cookie)
         self.sessions.pop(previous, None)
         if len(self.sessions) >= 32:
             raise web.HTTPTooManyRequests()
         key = secrets.token_urlsafe(32)
         self.sessions[key] = {"token": token, "until": now + 3600, "checked": now}
         response = web.json_response({"ok": True})
-        response.set_cookie(COOKIE, key, httponly=True, samesite="Strict", max_age=3600,
+        response.set_cookie(self.cookie, key, httponly=True, samesite="Strict", max_age=3600,
                             secure=request.scheme == "https", path="/qq-login/")
         return response
 
@@ -148,7 +152,13 @@ class Gateway:
         if time.monotonic() - self.last_action < 20:
             raise web.HTTPTooManyRequests(text="操作正在执行，请稍候")
         name = request.match_info["action"]
-        units = {"connect": "snowluma-dice3-connect.service", "restart": "snowluma-dice3-qq-restart.service"}
+        units = self.config.get("action_units", {
+            "connect": "snowluma-dice3-connect.service",
+            "restart": "snowluma-dice3-qq-restart.service",
+        })
+        if not all(re.fullmatch(r"snowluma-[a-z0-9-]+\.service", unit)
+                   for unit in units.values()):
+            raise web.HTTPServiceUnavailable()
         if name not in units:
             raise web.HTTPNotFound()
         if name == "connect":
@@ -187,7 +197,8 @@ class Gateway:
     def managed(self, endpoint):
         return (endpoint.get("userId") == "QQ:" + self.config["account"]
                 and endpoint.get("protocolType") == "pureonebot"
-                and endpoint.get("adapter", {}).get("connectUrl") == "ws://127.0.0.1:38002/")
+                and endpoint.get("adapter", {}).get("connectUrl")
+                == self.config.get("relay_url", "ws://127.0.0.1:38002/"))
 
     async def guard_duplicate(self, request, body):
         """Block legacy re-enabling/duplicate creation only while managed QQ is enabled."""
@@ -296,7 +307,10 @@ class Gateway:
             return response
 
     async def page(self, request):
-        return web.FileResponse(ROOT / "login.html", headers={"Cache-Control": "no-store"})
+        source = (ROOT / "login.html").read_text(encoding="utf-8")
+        source = source.replace("2325552935", self.config["account"])
+        return web.Response(text=source, content_type="text/html",
+                            headers={"Cache-Control": "no-store"})
 
     async def entry(self, request):
         raise web.HTTPFound("/#/connect")

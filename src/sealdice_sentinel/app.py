@@ -239,11 +239,12 @@ async def run(config_path: Path) -> None:
             supervise("mail-worker", mail_worker.run, stop),
             name="supervisor-mail-worker",
         ),
-        asyncio.create_task(
+    ]
+    if config.milky.monitoring_enabled:
+        tasks.append(asyncio.create_task(
             supervise("milky-reconciliation", reconciliation.run, stop),
             name="supervisor-milky-reconciliation",
-        ),
-    ]
+        ))
     if config.token_usage.enabled:
         usage_reporter = DailyTokenUsageReporter(
             repository=store,

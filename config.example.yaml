@@ -4,6 +4,8 @@ app:
   log_level: INFO
 
 milky:
+  # 切换主号到 OneBot 后关闭旧 Milky 探测和请求同步；保留连接配置供回退。
+  monitoring_enabled: true
   base_url: http://127.0.0.1:3000
   access_token: change-me
   webhook_host: 127.0.0.1

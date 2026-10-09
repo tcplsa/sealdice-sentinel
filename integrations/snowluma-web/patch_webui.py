@@ -5,6 +5,7 @@ minified-code replacements to a different frontend build.
 """
 import argparse
 import hashlib
+import re
 from pathlib import Path
 
 SOURCE_ASSET = "index-Crjbs6FH.js"
@@ -13,7 +14,11 @@ OUTPUT_ASSET = "index-snowluma-v1.js"
 SNOW = '"snowluma-main"'
 
 
-def patch(source):
+def patch(source, account="2325552935", relay_url="ws://127.0.0.1:38002/"):
+    if not re.fullmatch(r"[1-9][0-9]{4,19}", account):
+        raise ValueError("Invalid managed QQ account")
+    if not re.fullmatch(r"ws://127\.0\.0\.1:[0-9]{4,5}/", relay_url):
+        raise ValueError("Relay must be a fixed loopback WebSocket URL")
     if hashlib.sha256(source.encode()).hexdigest() != SOURCE_SHA256:
         raise ValueError("Unsupported SealDice frontend; review integration before upgrading")
 
@@ -43,11 +48,11 @@ def patch(source):
     # Component-scoped lifecycle: no DOM polling, no hidden retained VNC session.
     anchor = 'const et=Ne({get:()=>d(w.accountType)?"QQ":w.accountType'
     helpers = (
-        'const _snowManaged=e=>e.userId==="QQ:2325552935"&&e.protocolType==="pureonebot"'
-        '&&e.adapter?.connectUrl==="ws://127.0.0.1:38002/",'
-        '_snowTarget=e=>_snowManaged(e)||(e.userId==="QQ:2325552935"&&e.protocolType==="milky"),'
+        f'const _snowManaged=e=>e.userId==="QQ:{account}"&&e.protocolType==="pureonebot"'
+        f'&&e.adapter?.connectUrl==="{relay_url}",'
+        f'_snowTarget=e=>_snowManaged(e)||(e.userId==="QQ:{account}"&&e.protocolType==="milky"),'
         '_snowConns=items=>{const active=items.some(e=>_snowManaged(e)&&e.enable);'
-        'return items.filter(e=>!(active&&!e.enable&&e.userId==="QQ:2325552935"&&e.protocolType==="milky"))},'
+        f'return items.filter(e=>!(active&&!e.enable&&e.userId==="QQ:{account}"&&e.protocolType==="milky"))}},'
         f'_snowOpen=()=>{{we();w.accountType={SNOW};w.step=1;w.isEnd=!1;A.value=!0}},'
         '_snowMessage=event=>{if(event.origin!==location.origin||event.source!=='
         'document.getElementById("snowluma-login-frame")?.contentWindow)return;'
@@ -69,5 +74,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--account", default="2325552935")
+    parser.add_argument("--relay-url", default="ws://127.0.0.1:38002/")
     args = parser.parse_args()
-    args.output.write_text(patch(args.source.read_text(encoding="utf-8")), encoding="utf-8")
+    args.output.write_text(patch(args.source.read_text(encoding="utf-8"), args.account,
+                                 args.relay_url), encoding="utf-8")

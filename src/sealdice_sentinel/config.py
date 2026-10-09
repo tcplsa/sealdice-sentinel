@@ -23,6 +23,7 @@ class MilkyConfig:
     reconciliation_interval_seconds: int = 300
     probe_friend_requests: bool = True
     expected_user_id: str | None = None
+    monitoring_enabled: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -231,6 +232,8 @@ def _check_http_url(value: str) -> None:
 def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...]:
     """Keep the existing main connection and add independently scoped health targets."""
     milky = MilkyConfig(**data["milky"])
+    if type(milky.monitoring_enabled) is not bool:
+        raise TypeError("milky monitoring_enabled must be true or false")
     sealdice = SealDiceConfig(**data["sealdice"])
     raw_targets = data.get("monitoring_targets", [])
     if not isinstance(raw_targets, list):
@@ -270,7 +273,7 @@ def load_monitoring_targets(data: dict[str, Any]) -> tuple[MonitoringTarget, ...
         raw_connections = entry.get("milky_connections", [])
         if not isinstance(raw_connections, list):
             raise TypeError("milky_connections must be a list")
-        if target_id == "default":
+        if target_id == "default" and milky.monitoring_enabled:
             raw_connections = [{
                 "id": "main", "name": "主 QQ 连接", "base_url": milky.base_url,
                 "access_token": milky.access_token,

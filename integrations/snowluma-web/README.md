@@ -116,3 +116,14 @@ stop it before restoring the third core to public port 3214, remove the backend
 address override and restart that core. Restore the previous web files from
 `/opt/sealdice3/backups/snowluma-20261007/web-entry/standalone-before-native` if
 only the UI patch needs rolling back. Never expose the raw VNC or OneBot ports.
+# 多实例测试
+
+每个 Web 网关使用本实例的 `core`、`account`、`relay_url`、`cookie_name`、
+`action_units` 和 `result_file`。前端生成时通过 `--account` 和 `--relay-url`
+指定同一账号与转发地址。登录面板显示配置中的账号，固定连接动作必须核验
+该账号在线后才停用旧连接。共享 QQ 扫码环境只能同时供一个实例测试。
+
+主实例改用 OneBot 后，设置 `milky.monitoring_enabled: false`，并开启对应
+OneBot 的 `monitoring_enabled`；海豹 HTTP 与服务监控继续保留。恢复 Yogurt
+时同步恢复这两个标记，避免停用协议被误报为掉线。
+
