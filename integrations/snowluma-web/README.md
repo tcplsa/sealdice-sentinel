@@ -1,129 +1,90 @@
-# SnowLuma in the SealDice account dialog
+# SnowLuma QQ 登录集成
 
-Deployment-specific integration for SealDice 3, QQ 2325552935. QQ 2449901900
-continues to use Yogurt. This directory is an optional companion service, not
-part of the Sentinel wheel.
+在海豹原来的“账号设置 → 添加 → QQ 协议”中选择 **SnowLuma 客户端**，
+填写 QQ 号，点击“连接”，页面只显示登录二维码。手机确认后，后台核验
+登录账号及在线状态，再接入海豹。实际发消息是否成功仍需自然消息或用户测试。
 
-## User flow
+本目录是可选的配套程序，包含于源码包，独立于 Sentinel Python 运行服务。
+当前登录准备程序针对一号测试环境；一个共享客户端同时只供一个 QQ 登录。
+切换号码前必须先停用该客户端的现有 SL 连接，其他 Yogurt 账号保持独立。
 
-Open SealDice **账号设置 → + → QQ 协议 → SnowLuma 客户端（主号扫码）**.
-The official QQ login window is embedded in the existing **帐号登录** dialog.
-Scan with QQ 2325552935, confirm on the phone, then select **已扫码，连接**.
-The main account card's **重新登录** opens the same dialog. Closing it unmounts
-the iframe and closes its desktop connection. Selecting another QQ protocol
-continues to use the original SealDice form.
+## 页面与二维码
 
-The original main endpoint stays enabled until explicit cutover. After successful
-cutover, its disabled backup is hidden from the account cards while the managed
-SnowLuma endpoint is enabled. The proxy blocks attempts to re-enable/relogin that
-old account or add it again via the supported legacy add routes. Disabling the
-managed endpoint permits manual rollback. No QQ messages are generated to test
-the connection; connection status does not prove message delivery.
+`patch_webui.py` 校验已安装前端的完整 SHA-256，生成新的 Vue 登录选项，
+原海豹二进制保持原样。参数 `--account` 指定原账号的登录入口，
+`--relay-url` 指定本实例的本机 OneBot 转发地址。未知前端版本需要重新核对。
 
-## Layout and prerequisites
+`login.html` 在原登录弹窗内展示 QQ 输入框、连接、二维码与刷新按钮。
+新页面没有 VNC 客户端、服务器桌面、鼠标或墙纸提醒。
+`gateway.py` 的 `qr_only: true` 同时关闭旧桌面连接与凭据接口。
 
-* Public WebUI: `3214`, served by `snowluma-web.service` as user `snowluma-web`.
-* Existing SealDice core: loopback `13214`; all normal HTTP, uploads and WebSockets
-  are proxied to it. `95-webui-backend.conf` overrides only the third core's
-  `--address` argument.
-* SnowLuma OneBot HTTP: loopback `38000`; forward WebSocket `38001`.
-* Sentinel's measured relay: loopback `38002`, the managed account's connect URL.
-* noVNC WebSocket: loopback `6083`; x11vnc: loopback `5903`.
-* Program files: `/opt/snowluma/web`, root-owned, readable by the service.
-* Python: `/opt/sealdice-sentinel/current/venv/bin/python`, with aiohttp and PyYAML.
+`qr_capture.py` 只接受专用 SL 服务中的 QQ 登录窗口，核验 PID、窗口尺寸、
+截图格式和二维码定位标记。识别失败不返回窗口或桌面。过期刷新须同时识别
+当前窗口中的淡化二维码、红色过期提示和刷新按钮，再等待新码生成；不复用
+旧进程的坐标。图片内存处理，不记录聊天。
+使用独立 Python 环境安装 `Pillow>=11,<13`；截图需要 X11 和 XWD。
 
-Use `NODE_OPTIONS=--max-old-space-size=256` in the SnowLuma supervisor program's
-environment, not that flag on the node command line. SnowLuma passes
-`process.execArgv` to its database migration Worker; V8 memory flags in that
-explicit list cause `ERR_WORKER_INVALID_EXEC_ARGV`. The service cgroup limits
-still bound total memory. Verify an actual Worker startup and read-only OneBot
-status after changing the launch configuration; a running node process alone
-does not prove the login completed.
+## 配置
 
-`patch_webui.py` adds a real Vue option, embedded panel and account lifecycle hooks
-to the **exact installed** frontend asset. It checks the full SHA-256 before
-changing anything. Generate `index-snowluma-v1.js` from `index-Crjbs6FH.js`, then
-place the output beside `gateway.py`. The root HTML references this new asset;
-the original binary/assets are unchanged. An unknown upstream build requires
-review and a new patch; do not bypass the hash check when upgrading SealDice.
-
-Build `novnc-bundle.js` from the installed noVNC `core/rfb.js` and sibling `vendor`
-directory using esbuild with `--bundle --format=esm --target=es2022 --minify
---legal-comments=inline`. Retain the distribution copyright/license file.
-Optional `.gz` companions are served by aiohttp. Do not commit credentials or
-runtime configuration to this repository.
-
-The root-owned `config.json` (0640, group `snowluma-web`) supplies:
+每个网关有独立的 `core`、`account`、`cookie_name`、`relay_url`、
+`action_units`、`result_file` 和 `origins`。一号示例：
 
 ```json
 {
-  "host": "0.0.0.0", "port": 3214,
-  "core": "http://127.0.0.1:13214",
-  "onebot": "http://127.0.0.1:38000", "onebot_token": "<existing token>",
-  "account": "2325552935", "vnc_password": "<existing VNC password>",
-  "desktop_ws": "ws://127.0.0.1:6083/websockify",
-  "novnc_assets": "/usr/share/novnc",
-  "origins": ["http://<server>:3214", "http://127.0.0.1:3214"],
-  "result_file": "/var/lib/snowluma-web/connect-result.json"
+  "host": "0.0.0.0", "port": 3212,
+  "core": "http://127.0.0.1:13212",
+  "account": "3764338181",
+  "onebot": "http://127.0.0.1:38020", "onebot_token": "<secret>",
+  "relay_url": "ws://127.0.0.1:38022/",
+  "cookie_name": "dice1_qq_login",
+  "qr_only": true,
+  "qr_python": "/opt/snowluma/qr-venv/bin/python",
+  "qr_location_file": "/opt/snowluma/web-dice1/qr-location.json",
+  "origins": ["http://<server>:3212", "http://127.0.0.1:3212"],
+  "result_file": "/var/lib/snowluma-web/dice1-connect-result.json",
+  "action_units": {"connect": "snowluma-dice1-connect.service", "restart": "snowluma-dice1-qq-restart.service"}
 }
 ```
 
-## Authentication and actions
+配置和程序由 root 管理。配置含密钥，权限 0640，组为 `snowluma-web`，
+不要提交实际配置、QQ 登录文件、密钥或二维码到版本库。
 
-The panel verifies the existing SealDice token server-side and issues a bounded,
-one-hour HttpOnly SameSite=Strict session. It rechecks authentication every 30
-seconds, including during desktop sessions. No token is placed in the URL.
-Desktop assets, credentials, status and WebSocket require authentication;
-mutations and desktop WebSockets also require an exact allowed origin.
+## 可选的自行填号准备动作
 
-The unprivileged gateway can invoke only these two exact sudo commands:
+不配置 `prepare_unit` 时，页面仅接受已经准备的 `account`，其他 QQ 号返回
+明确错误。开放自行换填号码须由管理员审核并安装一个固定的准备服务：
 
+```json
+{
+  "prepare_unit": "snowluma-dice1-login-prepare.service",
+  "login_request_file": "/var/lib/snowluma-web/dice1-login-request.json"
+}
 ```
-/usr/bin/systemctl start --no-block snowluma-dice3-connect.service
-/usr/bin/systemctl start --no-block snowluma-dice3-qq-restart.service
-```
 
-The first fixed root unit runs `connect_main.py`. It checks account identity and
-online state, calls the pre-existing root deployment helper
-`/opt/snowluma/cutover_main.py` for first migration, or reconnects the recorded
-managed endpoint on later use. The migration helper backs up configuration,
-disables only the old main endpoint and its Milky port-sync unit, enables the
-OneBot monitor/relay, verifies the new endpoint, and restores the old connection
-on failure. Its protected state lives under
-`/opt/sealdice3/backups/snowluma-20261007`. It is a prerequisite installed with
-the SnowLuma deployment, not a generic installer in this directory.
+服务只执行 root 所有的 `prepare_login.py --config <fixed config>`。
+Web 用户仅可启动这一个固定单元，并写入预先创建的数字 QQ 请求文件，
+不能指定命令、配置路径或服务名。该文件由 Web 用户拥有、权限 0600；
+父目录由 root 管理，网关沙箱仅开放该文件的写入路径。sudoers 用 visudo 验证。
 
-The second root unit invokes supervisor only for `qq-main`; no arbitrary unit,
-command, account or URL is accepted from a browser. `/var/lib/snowluma-web` is
-root-owned; only the fixed public action state schema is returned to the client.
-Gateway service limits: MemoryHigh 64M, MemoryMax 96M, SwapMax 32M, TasksMax 64,
-NOFILE 2048; PrivateTmp, ProtectSystem=strict, ProtectHome=true. NoNewPrivileges
-must be false for the narrowly scoped sudo actions. Root owns the action scripts,
-service units, sudoers file and all gateway code. Validate sudoers with visudo.
+准备程序核验账号输入、拒绝替换仍启用的不同 SL 账号，备份相关配置，
+建立独立 QQ 登录目录和账号 OneBot 设置，只更新该测试连接的监控。
+使用前须按实际部署核对服务名、路径、端口及固定接入程序。
 
-## Verification and rollback
+已核验登录后，固定接入程序只停用同一个 QQ 的旧连接，再开启对应 OneBot
+监控和转发。主号切到 OneBot 时设置 `milky.monitoring_enabled: false`，
+防止停用的 Yogurt 被误报为掉线；海豹服务和 WebUI 监测继续保留。
+接入失败应恢复旧连接及监控配置，登录数据保留。
 
-`tests/test_qq_web.py` covers authentication, cross-origin rejection, opaque upload
-and WebSocket proxying, token expiry, missing QQ login, duplicate prevention and
-unrelated endpoint operations. Browser verification must additionally cover the
-native protocol dropdown, selecting SnowLuma, returning to another protocol,
-closing/reopening the dialog, and the main card's relogin button. Actual cutover
-and message timing require the account owner to scan; do not call them verified
-until evidence is available.
+## 验证与运行
 
-For a page-only update, restart only `snowluma-web.service`. To remove the gateway,
-stop it before restoring the third core to public port 3214, remove the backend
-address override and restart that core. Restore the previous web files from
-`/opt/sealdice3/backups/snowluma-20261007/web-entry/standalone-before-native` if
-only the UI patch needs rolling back. Never expose the raw VNC or OneBot ports.
-# 多实例测试
+测试覆盖认证、跨域拒绝、输入校验、先连接再取码、纯 PNG 输出、二维码
+裁剪范围、旧桌面入口关闭、代理上传/WebSocket及其他账号操作不受影响。
+手机号扫码和真实消息送达需要另行验证，API 在线不等于发送已送达。
 
-每个 Web 网关使用本实例的 `core`、`account`、`relay_url`、`cookie_name`、
-`action_units` 和 `result_file`。前端生成时通过 `--account` 和 `--relay-url`
-指定同一账号与转发地址。登录面板显示配置中的账号，固定连接动作必须核验
-该账号在线后才停用旧连接。共享 QQ 扫码环境只能同时供一个实例测试。
+页面更新只需重启对应 Web 网关。将海豹绑定到本机内部端口时，保留原公开
+端口给网关；停止网关并恢复海豹地址即可撤回此集成。不要公开原始 OneBot
+或远程桌面端口。
 
-主实例改用 OneBot 后，设置 `milky.monitoring_enabled: false`，并开启对应
-OneBot 的 `monitoring_enabled`；海豹 HTTP 与服务监控继续保留。恢复 Yogurt
-时同步恢复这两个标记，避免停用协议被误报为掉线。
-
+SnowLuma 的 Node 内存设置使用环境变量 `NODE_OPTIONS=--max-old-space-size=256`。
+QQ和后台 Worker 的总内存还需通过服务限额管理；验证 Worker 启动与账号
+只读接口，不能只凭 Node 进程存在认定登录成功。

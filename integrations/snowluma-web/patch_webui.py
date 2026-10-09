@@ -32,32 +32,33 @@ def patch(source, account="2325552935", relay_url="ws://127.0.0.1:38002/"):
     replace('d=pe=>[$t,Al,In,Ot,Un,Ql,mn,Ia,zn].includes(pe)',
             f'd=pe=>[$t,Al,In,Ot,Un,Ql,mn,Ia,zn,{SNOW}].includes(pe)')
     anchor = 'e(me,{label:"Yogurt 客户端 (内置)",value:l(zn),disabled:b()},null,8,["value","disabled"])'
-    replace(anchor, f'e(me,{{label:"SnowLuma 客户端（主号扫码）",value:{SNOW}}}),{anchor}')
+    replace(anchor, f'e(me,{{label:"SnowLuma 客户端",value:{SNOW}}}),{anchor}')
     anchor = 'w.accountType===l($t)?(i(),$(re,{key:1,label:"设备"'
     replace(anchor,
             f'w.accountType==={SNOW}&&l(A)?a("iframe",'
-            '{key:"snow-login",id:"snowluma-login-frame",src:"/qq-login/panel",'
-            'title:"SnowLuma 主号扫码登录",style:{width:"100%",height:"720px",border:"0"}}):B("",!0),'
+            '{key:"snow-login",id:"snowluma-login-frame",src:"/qq-login/panel?account="+encodeURIComponent(w.account||""),'
+            'title:"QQ 扫码登录",style:{width:"100%",height:"470px",border:"0"}}):B("",!0),'
             + anchor)
     # The embedded panel owns its connect action; never submit the legacy add API.
     anchor = 'w.accountType===l(Ot)&&w.officialQQLoginMode==="manual"?(i(),R(de,{key:0},[e(W,{loading:l(E)'
     replace(anchor, f'w.accountType==={SNOW}?B("",!0):' + anchor)
     replace('qe=async()=>{if(w.step=2,', f'qe=async()=>{{if(w.accountType==={SNOW})return;if(w.step=2,')
     replace('Qe=async pe=>{g.value=!1,',
-            'Qe=async pe=>{if(_snowTarget(pe)){_snowOpen();return}g.value=!1,')
+            'Qe=async pe=>{if(_snowTarget(pe)){_snowOpen(pe);return}g.value=!1,')
     # Component-scoped lifecycle: no DOM polling, no hidden retained VNC session.
     anchor = 'const et=Ne({get:()=>d(w.accountType)?"QQ":w.accountType'
     helpers = (
-        f'const _snowManaged=e=>e.userId==="QQ:{account}"&&e.protocolType==="pureonebot"'
+        'const _snowManaged=e=>e.protocolType==="pureonebot"'
         f'&&e.adapter?.connectUrl==="{relay_url}",'
         f'_snowTarget=e=>_snowManaged(e)||(e.userId==="QQ:{account}"&&e.protocolType==="milky"),'
-        '_snowConns=items=>{const active=items.some(e=>_snowManaged(e)&&e.enable);'
-        f'return items.filter(e=>!(active&&!e.enable&&e.userId==="QQ:{account}"&&e.protocolType==="milky"))}},'
-        f'_snowOpen=()=>{{we();w.accountType={SNOW};w.step=1;w.isEnd=!1;A.value=!0}},'
+        '_snowConns=items=>items.filter(e=>!(!e.enable&&e.protocolType==="milky"'
+        '&&items.some(s=>_snowManaged(s)&&s.enable&&s.userId===e.userId))),'
+        f'_snowOpen=e=>{{we();w.accountType={SNOW};w.account=e?.userId?.replace(/^QQ:/,"")||"";'
+        'w.step=1;w.isEnd=!1;A.value=!0},'
         '_snowMessage=event=>{if(event.origin!==location.origin||event.source!=='
         'document.getElementById("snowluma-login-frame")?.contentWindow)return;'
         'if(event.data?.type==="snowluma-connected"){p.getImConnections();'
-        'A.value=!1;ne.success("SnowLuma 主号已连接")}};'
+        'A.value=!1;ne.success("QQ 已连接")}};'
         'wt(()=>window.addEventListener("message",_snowMessage));'
         'Kl(()=>window.removeEventListener("message",_snowMessage));'
     )

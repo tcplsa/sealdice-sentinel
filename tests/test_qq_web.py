@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import io
 import json
 import time
 from pathlib import Path
@@ -139,4 +140,110 @@ def test_gateway_auth_privacy_proxy_upload_and_websocket(tmp_path, account, rela
                     session["until"] = time.monotonic() - 1
                 response = await client.get("/qq-login/connection")
                 assert response.status == 401
+    asyncio.run(scenario())
+
+
+def test_qr_only_flow_requires_auth_and_connect_before_returning_an_image(tmp_path, monkeypatch):
+    async def scenario():
+        async def core(request):
+            if request.path == "/sd-api/im_connections/list" and request.headers.get("token") == "admin":
+                return web.json_response([])
+            raise web.HTTPForbidden()
+        backend = web.Application()
+        backend.router.add_route("*", "/{tail:.*}", core)
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new("RGB", (220, 218), "white").save(buffer, format="PNG")
+        png = buffer.getvalue()
+        calls = []
+
+        class CaptureProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return png, None
+
+        async def capture(*args, **kwargs):
+            calls.append(args)
+            return CaptureProcess()
+
+        monkeypatch.setattr(module.asyncio, "create_subprocess_exec", capture)
+        async with TestServer(backend) as upstream:
+            config = {"core": str(upstream.make_url("")).rstrip("/"), "account": "3764338181",
+                      "origins": ["http://allowed.example"], "qr_only": True,
+                      "qr_python": "/fixed/python", "cookie_name": "dice1_qq_login"}
+            gateway = module.Gateway(config)
+            async with TestClient(TestServer(gateway.app()), cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                assert (await client.get("/qq-login/qr")).status == 401
+                response = await client.post("/qq-login/session", json={"token": "admin"},
+                                             headers={"Origin": "http://allowed.example"})
+                assert response.status == 200
+                assert (await client.get("/qq-login/qr")).status == 409
+                assert (await client.get("/qq-login/connection")).status == 404
+                assert (await client.get("/qq-login/socket")).status == 404
+                for account, status in [("123;command", 400), ("2325552935", 409), ("3764338181", 200)]:
+                    response = await client.post("/qq-login/start", json={"account": account},
+                                                 headers={"Origin": "http://allowed.example"})
+                    assert response.status == status
+                assert calls == []
+                response = await client.get("/qq-login/qr")
+                assert response.status == 200 and response.content_type == "image/png"
+                assert await response.read() == png
+                assert "--refresh" in calls[0] and calls[0][0] == "/fixed/python"
+    asyncio.run(scenario())
+
+
+def test_selected_qq_prepare_invokes_only_the_fixed_service(tmp_path, monkeypatch):
+    async def scenario():
+        endpoints = []
+
+        async def core(request):
+            if request.path == "/sd-api/im_connections/list" and request.headers.get("token") == "admin":
+                return web.json_response(endpoints)
+            raise web.HTTPForbidden()
+
+        backend = web.Application()
+        backend.router.add_route("*", "/{tail:.*}", core)
+        request_file = tmp_path / 'request.json'
+        request_file.write_text('{}')
+        config_file = tmp_path / 'config.json'
+        calls = []
+
+        class PrepareProcess:
+            async def wait(self):
+                selected = json.loads(request_file.read_text())['account']
+                config_file.write_text(json.dumps({'account': selected, 'onebot_token': 'new-secret'}))
+                return 0
+
+        async def prepare(*args, **kwargs):
+            calls.append(args)
+            return PrepareProcess()
+
+        monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', prepare)
+        # Production runs on Linux with O_NOFOLLOW; this also runs on Windows CI.
+        monkeypatch.setattr(module.os, 'O_NOFOLLOW', getattr(module.os, 'O_NOFOLLOW', 0), raising=False)
+        async with TestServer(backend) as upstream:
+            config = {'core': str(upstream.make_url('')).rstrip('/'), 'account': '3764338181',
+                      'origins': ['http://allowed.example'], 'qr_only': True,
+                      'relay_url': 'ws://127.0.0.1:38022/',
+                      'prepare_unit': 'snowluma-dice1-login-prepare.service',
+                      'login_request_file': str(request_file), 'config_file': str(config_file)}
+            gateway = module.Gateway(config)
+            async with TestClient(TestServer(gateway.app()), cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                headers = {'Origin': 'http://allowed.example'}
+                assert (await client.post('/qq-login/session', json={'token': 'admin'}, headers=headers)).status == 200
+                assert (await client.post('/qq-login/start', json={'account': '123;command'}, headers=headers)).status == 400
+                assert calls == [] and request_file.read_text() == '{}'
+                endpoints.append({'protocolType': 'pureonebot', 'enable': True, 'userId': 'QQ:3764338181',
+                                  'adapter': {'connectUrl': config['relay_url']}})
+                assert (await client.post('/qq-login/start', json={'account': '2325552935'}, headers=headers)).status == 409
+                assert calls == []
+                endpoints.clear()
+                response = await client.post('/qq-login/start', json={'account': '2325552935'}, headers=headers)
+                assert response.status == 200
+                assert calls == [('/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'start',
+                                  'snowluma-dice1-login-prepare.service')]
+                assert json.loads(request_file.read_text()) == {'account': '2325552935'}
+                assert gateway.config['account'] == '2325552935'
+                assert gateway.config['onebot_token'] == 'new-secret'
     asyncio.run(scenario())
